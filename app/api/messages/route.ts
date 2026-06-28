@@ -14,3 +14,9 @@ export async function POST(req: Request) {
   await sql`UPDATE chats SET last_message = ${text}, last_message_at = NOW(), has_unread = ${sender === "user"}, last_sender = ${sender} WHERE id = ${chatId}`;
   return NextResponse.json({ success: true });
 }
+
+export async function DELETE(req: Request) {
+  const { messageId } = await req.json();
+  await sql`DELETE FROM messages WHERE id = ${messageId}`;
+  return NextResponse.json({ success: true });
+}

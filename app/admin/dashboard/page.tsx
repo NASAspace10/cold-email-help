@@ -99,7 +99,7 @@ export default function Dashboard() {
   };
 
   const deleteMessage = async (messageId: number) => {
-    await fetch("/api/messages/delete", {
+    await fetch("/api/messages", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messageId }),
