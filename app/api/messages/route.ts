@@ -11,6 +11,6 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const { chatId, text, sender } = await req.json();
   await sql`INSERT INTO messages (chat_id, text, sender) VALUES (${chatId}, ${text}, ${sender})`;
-  await sql`UPDATE chats SET last_message = ${text}, last_message_at = NOW(), has_unread = ${sender === "user"} WHERE id = ${chatId}`;
+  await sql`UPDATE chats SET last_message = ${text}, last_message_at = NOW(), has_unread = ${sender === "user"}, last_sender = ${sender} WHERE id = ${chatId}`;
   return NextResponse.json({ success: true });
 }

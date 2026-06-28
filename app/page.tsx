@@ -10,6 +10,7 @@ export default function Home() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState("");
+  const [confirmClose, setConfirmClose] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -28,9 +29,7 @@ export default function Home() {
       const res = await fetch(`/api/chats?userId=${userId}`);
       const data = await res.json();
       setChats(data);
-      if (data.length > 0 && !selectedChatId) {
-        setSelectedChatId(data[0].id);
-      }
+      if (data.length > 0 && !selectedChatId) setSelectedChatId(data[0].id);
     };
     fetchChats();
     const interval = setInterval(fetchChats, 3000);
@@ -90,6 +89,7 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: selectedChatId, status: "closed" }),
     });
+    setConfirmClose(false);
   };
 
   const openNewTicket = async () => {
@@ -101,6 +101,7 @@ export default function Home() {
       body: JSON.stringify({ id, name, userId }),
     });
     setSelectedChatId(id);
+    setMessages([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent, action: () => void) => {
@@ -108,6 +109,13 @@ export default function Home() {
   };
 
   const selectedChat = chats.find(c => c.id === selectedChatId);
+  const isClosed = selectedChat?.status === "closed";
+
+  const formatTime = (ts: string) => {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
 
   if (stage === "welcome") return (
     <div style={styles.center}>
@@ -135,79 +143,95 @@ export default function Home() {
 
   return (
     <div style={styles.wrap}>
-      {/* Left sidebar - ticket list */}
+      {/* Confirm close modal */}
+      {confirmClose && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h3 style={styles.modalTitle}>Close this ticket?</h3>
+            <p style={styles.modalText}>You won't be able to send more messages in this ticket. You can open a new one anytime.</p>
+            <div style={styles.modalBtns}>
+              <button style={styles.modalCancel} onClick={() => setConfirmClose(false)}>Cancel</button>
+              <button style={styles.modalConfirm} onClick={closeTicket}>Close Ticket</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sidebar */}
       <div style={styles.sidebar}>
         <div style={styles.sidebarHeader}>
           <span>My Tickets</span>
           <button style={styles.newTicketBtn} onClick={openNewTicket}>+ New</button>
         </div>
-        {chats.map((chat) => (
-          <div
-            key={chat.id}
-            onClick={() => setSelectedChatId(chat.id)}
-            style={{ ...styles.ticketItem, background: selectedChatId === chat.id ? "#1a1a1a" : "transparent" }}
-          >
-            <div style={styles.ticketItemTop}>
-              <span style={styles.ticketLabel}>Ticket</span>
-              <span style={{ ...styles.statusDot, background: chat.status === "closed" ? "#ef4444" : "#f97316" }} />
+        {chats.map((chat, i) => {
+          const hasAdminReply = chat.last_sender === "admin";
+          return (
+            <div
+              key={chat.id}
+              onClick={() => setSelectedChatId(chat.id)}
+              style={{ ...styles.ticketItem, background: selectedChatId === chat.id ? "#1a1a1a" : "transparent" }}
+            >
+              <div style={styles.ticketItemTop}>
+                <span style={styles.ticketLabel}>Ticket #{chats.length - i}</span>
+                <div style={{ display:"flex", gap:"5px", alignItems:"center" }}>
+                  {hasAdminReply && <span style={styles.repliedDot} title="Admin replied" />}
+                  <span style={{ ...styles.statusDot, background: chat.status === "closed" ? "#ef4444" : "#f97316" }} />
+                </div>
+              </div>
+              <span style={styles.ticketPreview}>{chat.last_message?.slice(0, 35) || "No messages yet"}</span>
             </div>
-            <span style={styles.ticketPreview}>{chat.last_message?.slice(0, 35) || "No messages yet"}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Main chat area */}
+      {/* Main area */}
       <div style={styles.main}>
         {!selectedChatId ? (
           <div style={styles.empty}>Select a ticket</div>
-        ) : selectedChat?.status === "closed" ? (
-          <div style={styles.closedWrap}>
-            <div style={styles.chatHeader}>
-              <span style={{ ...styles.statusDot, background: "#ef4444" }} />
-              <span>Ticket Closed</span>
-            </div>
-            <div style={styles.messages}>
-              {messages.map((m) => (
-                <div key={m.id} style={m.sender === "user" ? styles.userMsg : styles.adminMsg}>
-                  {m.text}
-                </div>
-              ))}
-              <div ref={bottomRef} />
-            </div>
-            <div style={styles.closedBanner}>
-              This ticket is closed.
-              <button style={styles.openNewBtn} onClick={openNewTicket}>Open New Ticket</button>
-            </div>
-          </div>
         ) : (
           <>
             <div style={styles.chatHeader}>
-              <span style={styles.dot} />
-              <span>Cold Email Help</span>
+              <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                <span style={{ ...styles.statusDotSm, background: isClosed ? "#ef4444" : "#22c55e" }} />
+                <span>{isClosed ? "Ticket Closed" : "Cold Email Help"}</span>
+              </div>
+              <span style={styles.statusLabel}>{isClosed ? "Closed" : "Open"}</span>
             </div>
+
             <div style={styles.messages}>
               <div style={styles.introMsg}>
                 Hi {name}! 👋 Ask me anything about cold emailing professors — how to get started, what to write, how to follow up, anything.
               </div>
               {messages.map((m) => (
-                <div key={m.id} style={m.sender === "user" ? styles.userMsg : styles.adminMsg}>
-                  {m.text}
+                <div key={m.id} style={{ display:"flex", flexDirection:"column", alignItems: m.sender === "user" ? "flex-end" : "flex-start", gap:"3px" }}>
+                  <div style={m.sender === "user" ? styles.userMsg : styles.adminMsg}>
+                    {m.text}
+                  </div>
+                  <span style={styles.timestamp}>{formatTime(m.created_at)}</span>
                 </div>
               ))}
               <div ref={bottomRef} />
             </div>
-            <div style={styles.inputRow}>
-              <textarea
-                style={styles.chatInput}
-                placeholder="Type your question..."
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                onKeyDown={(e) => handleKeyDown(e, sendMessage)}
-                rows={1}
-              />
-              <button style={styles.closeBtn} onClick={closeTicket}>Close Ticket</button>
-              <button style={styles.sendBtn} onClick={sendMessage}>Send</button>
-            </div>
+
+            {isClosed ? (
+              <div style={styles.closedBanner}>
+                This ticket is closed.
+                <button style={styles.openNewBtn} onClick={openNewTicket}>Open New Ticket</button>
+              </div>
+            ) : (
+              <div style={styles.inputRow}>
+                <textarea
+                  style={styles.chatInput}
+                  placeholder="Type your question..."
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={(e) => handleKeyDown(e, sendMessage)}
+                  rows={1}
+                />
+                <button style={styles.closeBtn} onClick={() => setConfirmClose(true)}>Close Ticket</button>
+                <button style={styles.sendBtn} onClick={sendMessage}>Send</button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -229,20 +253,29 @@ const styles: { [key: string]: React.CSSProperties } = {
   ticketItemTop: { display:"flex", justifyContent:"space-between", alignItems:"center" },
   ticketLabel: { fontWeight:"600", fontSize:"0.85rem", color:"#ccc" },
   statusDot: { width:"10px", height:"10px", borderRadius:"50%", flexShrink:0, display:"inline-block" },
+  statusDotSm: { width:"8px", height:"8px", borderRadius:"50%", display:"inline-block" },
+  repliedDot: { width:"8px", height:"8px", borderRadius:"50%", background:"#22c55e", display:"inline-block" },
   ticketPreview: { color:"#555", fontSize:"0.78rem", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" },
   main: { flex:1, display:"flex", flexDirection:"column" },
   empty: { margin:"auto", color:"#444", fontSize:"0.95rem" },
-  chatHeader: { display:"flex", alignItems:"center", gap:"8px", padding:"16px 20px", borderBottom:"1px solid #222", fontWeight:"600" },
-  dot: { width:"8px", height:"8px", borderRadius:"50%", background:"#22c55e", display:"inline-block" },
+  chatHeader: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid #222", fontWeight:"600" },
+  statusLabel: { fontSize:"0.75rem", color:"#555", fontWeight:"400" },
   messages: { flex:1, overflowY:"auto", padding:"24px 16px", display:"flex", flexDirection:"column", gap:"12px" },
   introMsg: { background:"#111", border:"1px solid #222", borderRadius:"12px", padding:"14px 16px", color:"#ccc", maxWidth:"480px", fontSize:"0.95rem", lineHeight:"1.5" },
   userMsg: { alignSelf:"flex-end", background:"#fff", color:"#000", borderRadius:"12px 12px 2px 12px", padding:"10px 14px", maxWidth:"75%", fontSize:"0.95rem", lineHeight:"1.5" },
   adminMsg: { alignSelf:"flex-start", background:"#1a1a1a", color:"#fff", border:"1px solid #2a2a2a", borderRadius:"12px 12px 12px 2px", padding:"10px 14px", maxWidth:"75%", fontSize:"0.95rem", lineHeight:"1.5" },
+  timestamp: { fontSize:"0.7rem", color:"#444" },
   inputRow: { display:"flex", gap:"10px", padding:"16px", borderTop:"1px solid #222", alignItems:"flex-end" },
   chatInput: { flex:1, background:"#111", border:"1px solid #333", color:"#fff", padding:"12px 14px", borderRadius:"8px", fontSize:"0.95rem", outline:"none", resize:"none", lineHeight:"1.5" },
   closeBtn: { background:"transparent", color:"#ef4444", border:"1px solid #ef4444", padding:"10px 14px", borderRadius:"8px", fontWeight:"600", cursor:"pointer", whiteSpace:"nowrap", fontSize:"0.85rem" },
   sendBtn: { background:"#fff", color:"#000", border:"none", padding:"12px 20px", borderRadius:"8px", fontWeight:"600", cursor:"pointer" },
-  closedWrap: { display:"flex", flexDirection:"column", flex:1 },
   closedBanner: { padding:"16px", borderTop:"1px solid #222", display:"flex", alignItems:"center", gap:"16px", color:"#666", fontSize:"0.9rem" },
   openNewBtn: { background:"#fff", color:"#000", border:"none", padding:"8px 16px", borderRadius:"8px", fontWeight:"600", cursor:"pointer", fontSize:"0.85rem" },
+  modalOverlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 },
+  modal: { background:"#111", border:"1px solid #333", borderRadius:"12px", padding:"28px", maxWidth:"360px", width:"90%", display:"flex", flexDirection:"column", gap:"16px" },
+  modalTitle: { fontSize:"1.1rem", fontWeight:"700" },
+  modalText: { color:"#888", fontSize:"0.9rem", lineHeight:"1.5" },
+  modalBtns: { display:"flex", gap:"10px", justifyContent:"flex-end" },
+  modalCancel: { background:"#222", color:"#fff", border:"none", padding:"10px 20px", borderRadius:"8px", cursor:"pointer", fontWeight:"600" },
+  modalConfirm: { background:"#ef4444", color:"#fff", border:"none", padding:"10px 20px", borderRadius:"8px", cursor:"pointer", fontWeight:"600" },
 };
