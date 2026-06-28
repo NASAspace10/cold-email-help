@@ -69,13 +69,15 @@ export default function Dashboard() {
   return (
     <div style={styles.wrap}>
       <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>Chats</div>
+        <div style={styles.sidebarHeader}>Tickets</div>
         {chats.map((chat) => (
           <div key={chat.id} onClick={() => selectChat(chat)}
             style={{ ...styles.chatItem, background: selectedId === chat.id ? "#1a1a1a" : "transparent" }}>
             <div style={styles.chatItemTop}>
               <span style={styles.chatName}>{chat.name}</span>
-              {chat.has_unread && <span style={styles.unreadDot} />}
+              {chat.status === "closed"
+              ? <span style={{ ...styles.unreadDot, background: "#ef4444" }} />
+              : chat.has_unread && <span style={styles.unreadDot} />}
             </div>
             <span style={styles.lastMsg}>{chat.last_message?.slice(0, 40) || "No messages yet"}</span>
           </div>
