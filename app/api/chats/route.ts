@@ -5,10 +5,23 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const userId = searchParams.get("userId");
   if (userId) {
-    const rows = await sql`SELECT * FROM chats WHERE user_id = ${userId} ORDER BY last_message_at DESC`;
+    const rows = await sql`
+      SELECT c.*, COUNT(m.id)::int AS message_count
+      FROM chats c
+      LEFT JOIN messages m ON m.chat_id = c.id
+      WHERE c.user_id = ${userId}
+      GROUP BY c.id
+      ORDER BY c.last_message_at DESC
+    `;
     return NextResponse.json(rows);
   }
-  const rows = await sql`SELECT * FROM chats ORDER BY last_message_at DESC`;
+  const rows = await sql`
+    SELECT c.*, COUNT(m.id)::int AS message_count
+    FROM chats c
+    LEFT JOIN messages m ON m.chat_id = c.id
+    GROUP BY c.id
+    ORDER BY c.last_message_at DESC
+  `;
   return NextResponse.json(rows);
 }
 

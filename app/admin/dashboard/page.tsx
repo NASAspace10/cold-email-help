@@ -9,10 +9,13 @@ export default function Dashboard() {
   const [messages, setMessages] = useState<any[]>([]);
   const [reply, setReply] = useState("");
   const [filter, setFilter] = useState<"all" | "open" | "closed">("all");
+  const [seenCounts, setSeenCounts] = useState<Record<string, number>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (localStorage.getItem("adminAuth") !== "true") router.push("/admin");
+    const saved = localStorage.getItem("adminSeenCounts");
+    if (saved) setSeenCounts(JSON.parse(saved));
   }, []);
 
   const fetchChats = async () => {
@@ -31,6 +34,9 @@ export default function Dashboard() {
     const res = await fetch(`/api/messages?chatId=${id}`);
     const data = await res.json();
     setMessages(data);
+    const updated = { ...seenCounts, [id]: data.length };
+    setSeenCounts(updated);
+    localStorage.setItem("adminSeenCounts", JSON.stringify(updated));
   };
 
   useEffect(() => {
@@ -80,6 +86,11 @@ export default function Dashboard() {
     return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
+  const hasNewMessage = (chat: any) => {
+    const seen = seenCounts[chat.id] ?? 0;
+    return chat.last_sender === "user" && (chat.message_count ?? 0) > seen;
+  };
+
   const selectedChat = chats.find((c) => c.id === selectedId);
   const filtered = chats.filter(c => filter === "all" ? true : c.status === filter);
   const openCount = chats.filter(c => c.status !== "closed").length;
@@ -89,9 +100,7 @@ export default function Dashboard() {
       <div style={styles.sidebar}>
         <div style={styles.sidebarTop}>
           <span style={styles.sidebarTitle}>Tickets</span>
-          {openCount > 0 && (
-            <span style={styles.inboxCount}>{openCount} open</span>
-          )}
+          {openCount > 0 && <span style={styles.inboxCount}>{openCount} open</span>}
         </div>
         <div style={styles.filterRow}>
           {(["all", "open", "closed"] as const).map(f => (
@@ -101,19 +110,22 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
-        {filtered.map((chat) => (
-          <div key={chat.id} onClick={() => selectChat(chat)}
-            style={{ ...styles.chatItem, background: selectedId === chat.id ? "#1a1a1a" : "transparent" }}>
-            <div style={styles.chatItemTop}>
-              <span style={styles.chatName}>{chat.name}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                {chat.has_unread && chat.status !== "closed" && <span style={styles.unreadDot} />}
+        {filtered.map((chat) => {
+          const isNew = hasNewMessage(chat);
+          return (
+            <div key={chat.id} onClick={() => selectChat(chat)}
+              style={{ ...styles.chatItem, background: selectedId === chat.id ? "#1a1a1a" : "transparent" }}>
+              <div style={styles.chatItemTop}>
+                <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                  <span style={styles.chatName}>{chat.name}</span>
+                  {isNew && <span style={styles.newBadge}>New</span>}
+                </div>
                 <span style={{ ...styles.statusDot, background: chat.status === "closed" ? "#ef4444" : "#22c55e" }} />
               </div>
+              <span style={styles.lastMsg}>{chat.last_message?.slice(0, 40) || "No messages yet"}</span>
             </div>
-            <span style={styles.lastMsg}>{chat.last_message?.slice(0, 40) || "No messages yet"}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={styles.main}>
@@ -126,8 +138,7 @@ export default function Dashboard() {
                 <span style={{ ...styles.statusDotSm, background: selectedChat?.status === "closed" ? "#ef4444" : "#22c55e" }} />
                 <span>{selectedChat?.name}</span>
               </div>
-              <button
-                onClick={() => toggleStatus(selectedChat)}
+              <button onClick={() => toggleStatus(selectedChat)}
                 style={{ ...styles.toggleBtn, borderColor: selectedChat?.status === "closed" ? "#22c55e" : "#ef4444", color: selectedChat?.status === "closed" ? "#22c55e" : "#ef4444" }}>
                 {selectedChat?.status === "closed" ? "Reopen" : "Close"}
               </button>
@@ -151,10 +162,8 @@ export default function Dashboard() {
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
                 rows={1}
               />
-              <button
-                style={{ ...styles.sendBtn, opacity: selectedChat?.status === "closed" ? 0.4 : 1 }}
-                onClick={sendReply}
-                disabled={selectedChat?.status === "closed"}>
+              <button style={{ ...styles.sendBtn, opacity: selectedChat?.status === "closed" ? 0.4 : 1 }}
+                onClick={sendReply} disabled={selectedChat?.status === "closed"}>
                 Send
               </button>
             </div>
@@ -176,10 +185,10 @@ const styles: { [key: string]: React.CSSProperties } = {
   chatItem: { padding: "14px 16px", cursor: "pointer", borderBottom: "1px solid #111", display: "flex", flexDirection: "column", gap: "4px" },
   chatItemTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   chatName: { fontWeight: "600", fontSize: "0.95rem" },
-  unreadDot: { width: "8px", height: "8px", borderRadius: "50%", background: "#fff" },
+  newBadge: { background: "#22c55e", color: "#000", fontSize: "0.65rem", fontWeight: "700", padding: "2px 6px", borderRadius: "20px" },
   statusDot: { width: "9px", height: "9px", borderRadius: "50%", flexShrink: 0 },
   statusDotSm: { width: "8px", height: "8px", borderRadius: "50%", display: "inline-block" },
-  lastMsg: { color: "#666", fontSize: "0.8rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  lastMsg: { color: "#666", fontSize: "0.8rem", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" },
   main: { flex: 1, display: "flex", flexDirection: "column" },
   empty: { margin: "auto", color: "#444", fontSize: "0.95rem" },
   chatHeader: { padding: "16px 20px", borderBottom: "1px solid #222", fontWeight: "600", display: "flex", justifyContent: "space-between", alignItems: "center" },
