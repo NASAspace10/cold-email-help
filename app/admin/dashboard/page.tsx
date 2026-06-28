@@ -20,12 +20,13 @@ export default function Dashboard() {
   const [hoveredMsg, setHoveredMsg] = useState<number | null>(null);
   const [customQuestions, setCustomQuestions] = useState<Question[]>([{ question: "", type: "text", options: ["", ""] }]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const STANDARD_QUESTIONS: Question[] = [
     { question: "What grade are you in?", type: "text", options: [] },
     { question: "What is your intended major?", type: "text", options: [] },
     { question: "Have you attempted cold emailing before?", type: "multiple", options: ["Yes", "No"] },
-    { question: "Briefly describe the purpose of what you plan to achieve through cold emailing.", type: "text", options: [] },
+    { question: "Briefly describe what you plan to achieve through cold emailing.", type: "text", options: [] },
   ];
 
   useEffect(() => {
@@ -65,6 +66,13 @@ export default function Dashboard() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + "px";
+    }
+  }, [reply]);
 
   const selectChat = async (chat: Chat) => {
     setSelectedId(chat.id);
@@ -115,7 +123,7 @@ export default function Dashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: selectedId, questions: STANDARD_QUESTIONS, type: "standard" }),
     });
-    if (selectedId) fetchMessages(selectedId);
+    fetchMessages(selectedId);
     setAdminPanel(false);
     setPanelView("menu");
   };
@@ -123,13 +131,13 @@ export default function Dashboard() {
   const sendCustomQuestionnaire = async () => {
     if (!selectedId) return;
     const valid = customQuestions.filter(q => q.question.trim());
-    if (valid.length === 0) return;
+    if (!valid.length) return;
     await fetch("/api/questionnaire", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: selectedId, questions: valid, type: "custom" }),
     });
-    if (selectedId) fetchMessages(selectedId);
+    fetchMessages(selectedId);
     setAdminPanel(false);
     setPanelView("menu");
     setCustomQuestions([{ question: "", type: "text", options: ["", ""] }]);
@@ -138,32 +146,30 @@ export default function Dashboard() {
   const addQuestion = () => setCustomQuestions([...customQuestions, { question: "", type: "text", options: ["", ""] }]);
   const removeQuestion = (i: number) => setCustomQuestions(customQuestions.filter((_, idx) => idx !== i));
   const updateQuestion = (i: number, field: keyof Question, value: any) => {
-    const updated = [...customQuestions];
-    (updated[i] as any)[field] = value;
-    setCustomQuestions(updated);
+    const u = [...customQuestions]; (u[i] as any)[field] = value; setCustomQuestions(u);
   };
-  const updateOption = (qi: number, oi: number, value: string) => {
-    const updated = [...customQuestions];
-    updated[qi].options[oi] = value;
-    setCustomQuestions(updated);
+  const updateOption = (qi: number, oi: number, v: string) => {
+    const u = [...customQuestions]; u[qi].options[oi] = v; setCustomQuestions(u);
   };
   const addOption = (qi: number) => {
-    const updated = [...customQuestions];
-    if (updated[qi].options.length < 4) updated[qi].options.push("");
-    setCustomQuestions(updated);
+    const u = [...customQuestions]; if (u[qi].options.length < 4) u[qi].options.push(""); setCustomQuestions(u);
   };
   const removeOption = (qi: number, oi: number) => {
-    const updated = [...customQuestions];
-    updated[qi].options = updated[qi].options.filter((_, idx) => idx !== oi);
-    setCustomQuestions(updated);
+    const u = [...customQuestions]; u[qi].options = u[qi].options.filter((_, i) => i !== oi); setCustomQuestions(u);
   };
 
   const formatTime = (ts: string) => {
     if (!ts) return "";
     const d = new Date(ts);
     const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
-    if (isToday) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1) return "just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (diffDays === 1) return `Yesterday · ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " · " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
@@ -172,235 +178,237 @@ export default function Dashboard() {
     return chat.last_sender === "user" && (chat.message_count ?? 0) > seen;
   };
 
-  const selectedChat = chats.find((c) => c.id === selectedId);
+  const selectedChat = chats.find(c => c.id === selectedId);
   const filtered = chats.filter(c => filter === "all" ? true : c.status === filter);
   const openCount = chats.filter(c => c.status !== "closed").length;
   const isClosed = selectedChat?.status === "closed";
 
-  const isQ = (text: string) => text?.startsWith("📋");
-
-  const renderMessage = (m: Message) => {
-    const qMsg = isQ(m.text);
+  const renderMessage = (m: Message, index: number, arr: Message[]) => {
+    const isQ = m.text?.startsWith("📋");
     const isAdmin = m.sender === "admin";
-    const isHovered = hoveredMsg === m.id;
+    const isHov = hoveredMsg === m.id;
+    const prev = arr[index - 1];
+    const showTime = !prev || new Date(m.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60 * 1000;
 
     return (
-      <div
-        key={m.id}
-        style={{ display: "flex", flexDirection: "column", alignItems: isAdmin ? "flex-end" : "flex-start", gap: "5px" }}
-        onMouseEnter={() => deleteMode && setHoveredMsg(m.id)}
-        onMouseLeave={() => setHoveredMsg(null)}
-        onClick={() => deleteMode && deleteMessage(m.id)}
-      >
-        <div style={{
-          ...(qMsg ? styles.questionnaireMsg : isAdmin ? styles.adminMsg : styles.userMsg),
-          ...(deleteMode && isHovered ? { background: "#2a0a0a", borderColor: "#5a1a1a", cursor: "pointer", opacity: 0.7 } : {}),
-          alignSelf: isAdmin ? "flex-end" : "flex-start",
-          transition: "all 0.15s",
-        }}>
-          {qMsg
-            ? m.text.split("\n").map((line: string, i: number) => (
-              <div key={i} style={{
-                lineHeight: "1.7",
-                fontWeight: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "700" : line.match(/^\d+\./) ? "600" : "400",
-                color: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "#fff" : line.startsWith("   →") ? "#4ade80" : "#bbb",
-                fontSize: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "0.88rem" : "0.83rem",
-              }}>{line || "\u00A0"}</div>
-            ))
-            : m.text}
+      <div key={m.id}>
+        {showTime && <div style={a.timeDivider}>{formatTime(m.created_at)}</div>}
+        <div
+          style={{ display: "flex", justifyContent: isAdmin ? "flex-end" : "flex-start", marginBottom: "4px" }}
+          onMouseEnter={() => deleteMode && setHoveredMsg(m.id)}
+          onMouseLeave={() => setHoveredMsg(null)}
+          onClick={() => deleteMode && deleteMessage(m.id)}
+        >
+          <div style={{
+            ...(isQ ? a.questionnaireMsg : isAdmin ? a.adminMsg : a.userMsg),
+            ...(deleteMode && isHov ? { background: "#1a0808", borderColor: "#3a1010", opacity: 0.65, cursor: "pointer" } : {}),
+            transition: "all 0.12s",
+          }}>
+            {isQ
+              ? m.text.split("\n").map((line: string, i: number) => (
+                <div key={i} style={{
+                  lineHeight: "1.75",
+                  fontWeight: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "600" : line.match(/^\d+\./) ? "500" : "400",
+                  color: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "#fff" : line.startsWith("   →") ? "#4ade80" : "#777",
+                  fontSize: "0.82rem",
+                  letterSpacing: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "0.04em" : "0",
+                }}>{line || "\u00A0"}</div>
+              ))
+              : m.text}
+            {deleteMode && isHov && <div style={{ fontSize: "0.68rem", color: "#ef4444", marginTop: "5px" }}>click to delete</div>}
+          </div>
         </div>
-        <span style={styles.timestamp}>{formatTime(m.created_at)}{deleteMode && isHovered && <span style={{ color: "#ef4444", marginLeft: "6px" }}>click to delete</span>}</span>
       </div>
     );
   };
 
   return (
-    <div style={styles.wrap}>
+    <div style={a.wrap}>
       {/* Admin Panel Modal */}
       {adminPanel && (
-        <div style={styles.modalOverlay} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>
-          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+        <div style={a.overlay} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>
+          <div style={a.modal} onClick={e => e.stopPropagation()}>
             {panelView === "menu" && (<>
-              <div style={styles.modalHeader}>
-                <h3 style={styles.modalTitle}>Admin Panel</h3>
-                <button style={styles.modalClose} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
+              <div style={a.modalHeader}>
+                <div>
+                  <div style={a.modalTitle}>Admin Panel</div>
+                  <div style={a.modalSub}>Actions for <span style={{ color: "#fff" }}>{selectedChat?.name}</span></div>
+                </div>
+                <button style={a.modalCloseBtn} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
               </div>
-              <p style={styles.modalSub}>Actions for <strong style={{ color: "#fff" }}>{selectedChat?.name}</strong></p>
-              <div style={styles.panelGrid}>
-                <button style={styles.panelBtn} onClick={() => setPanelView("questionnaire")}>
-                  <span style={styles.panelIcon}>📋</span>
-                  <div>
-                    <div style={styles.panelBtnLabel}>Questionnaire</div>
-                    <div style={styles.panelBtnSub}>Send standard intake form</div>
-                  </div>
-                </button>
-                <button style={styles.panelBtn} onClick={() => setPanelView("custom")}>
-                  <span style={styles.panelIcon}>✏️</span>
-                  <div>
-                    <div style={styles.panelBtnLabel}>Custom Questionnaire</div>
-                    <div style={styles.panelBtnSub}>Build your own questions</div>
-                  </div>
-                </button>
-                <button style={{ ...styles.panelBtn, ...(deleteMode ? styles.panelBtnActive : {}) }}
-                  onClick={() => { setDeleteMode(!deleteMode); setAdminPanel(false); setPanelView("menu"); }}>
-                  <span style={styles.panelIcon}>🗑️</span>
-                  <div>
-                    <div style={styles.panelBtnLabel}>Delete Messages</div>
-                    <div style={styles.panelBtnSub}>{deleteMode ? "Currently active — click to turn off" : "Hover over a message to delete it"}</div>
-                  </div>
-                </button>
+              <div style={a.panelGrid}>
+                {[
+                  { icon: "📋", label: "Standard Questionnaire", sub: "Send preset intake form", action: () => setPanelView("questionnaire") },
+                  { icon: "✏️", label: "Custom Questionnaire", sub: "Build your own questions", action: () => setPanelView("custom") },
+                  { icon: "🗑️", label: deleteMode ? "Turn off Delete Mode" : "Delete Messages", sub: deleteMode ? "Currently active" : "Hover messages to remove them", action: () => { setDeleteMode(!deleteMode); setAdminPanel(false); } },
+                ].map((item, i) => (
+                  <button key={i} style={{ ...a.panelOption, ...(deleteMode && i === 2 ? a.panelOptionActive : {}) }} onClick={item.action}>
+                    <span style={{ fontSize: "1.2rem" }}>{item.icon}</span>
+                    <div style={{ textAlign: "left" as const }}>
+                      <div style={a.panelOptionLabel}>{item.label}</div>
+                      <div style={a.panelOptionSub}>{item.sub}</div>
+                    </div>
+                  </button>
+                ))}
               </div>
             </>)}
 
             {panelView === "questionnaire" && (<>
-              <div style={styles.modalHeader}>
-                <button style={styles.backBtn} onClick={() => setPanelView("menu")}>← Back</button>
-                <h3 style={styles.modalTitle}>Standard Questionnaire</h3>
-                <button style={styles.modalClose} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
+              <div style={a.modalHeader}>
+                <button style={a.backBtn} onClick={() => setPanelView("menu")}>← Back</button>
+                <button style={a.modalCloseBtn} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
               </div>
-              <p style={styles.modalSub}>Sends the following to <strong style={{ color: "#fff" }}>{selectedChat?.name}</strong>:</p>
-              <div style={styles.previewList}>
+              <div style={a.modalTitle}>Standard Questionnaire</div>
+              <div style={a.modalSub}>Sends the following to <span style={{ color: "#fff" }}>{selectedChat?.name}</span></div>
+              <div style={a.previewList}>
                 {STANDARD_QUESTIONS.map((q, i) => (
-                  <div key={i} style={styles.previewItem}>
-                    <span style={styles.previewNum}>{i + 1}</span>
+                  <div key={i} style={a.previewRow}>
+                    <span style={a.previewIdx}>{i + 1}</span>
                     <div>
-                      <div style={styles.previewQ}>{q.question}</div>
-                      {q.type === "multiple" && <div style={styles.previewOpts}>{q.options.join(" / ")}</div>}
+                      <div style={a.previewQ}>{q.question}</div>
+                      {q.type === "multiple" && <div style={a.previewOpts}>{q.options.join(" / ")}</div>}
                     </div>
                   </div>
                 ))}
               </div>
-              <button style={styles.sendQBtn} onClick={sendStandardQuestionnaire}>Send Questionnaire →</button>
+              <button style={a.sendBtn2} onClick={sendStandardQuestionnaire}>Send questionnaire →</button>
             </>)}
 
             {panelView === "custom" && (<>
-              <div style={styles.modalHeader}>
-                <button style={styles.backBtn} onClick={() => setPanelView("menu")}>← Back</button>
-                <h3 style={styles.modalTitle}>Custom Questionnaire</h3>
-                <button style={styles.modalClose} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
+              <div style={a.modalHeader}>
+                <button style={a.backBtn} onClick={() => setPanelView("menu")}>← Back</button>
+                <button style={a.modalCloseBtn} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
               </div>
-              <div style={styles.customScroll}>
+              <div style={a.modalTitle}>Custom Questionnaire</div>
+              <div style={a.customScroll}>
                 {customQuestions.map((q, qi) => (
-                  <div key={qi} style={styles.customQuestion}>
-                    <div style={styles.customQHeader}>
-                      <span style={styles.customQNum}>Q{qi + 1}</span>
-                      <select value={q.type} onChange={e => updateQuestion(qi, "type", e.target.value)} style={styles.typeSelect}>
+                  <div key={qi} style={a.customQ}>
+                    <div style={a.customQTop}>
+                      <span style={a.customQLabel}>Q{qi + 1}</span>
+                      <select value={q.type} onChange={e => updateQuestion(qi, "type", e.target.value)} style={a.typeSelect}>
                         <option value="text">Text answer</option>
                         <option value="multiple">Multiple choice</option>
                       </select>
-                      {customQuestions.length > 1 && <button style={styles.removeQBtn} onClick={() => removeQuestion(qi)}>✕</button>}
+                      {customQuestions.length > 1 && <button style={a.removeBtn} onClick={() => removeQuestion(qi)}>✕</button>}
                     </div>
-                    <input style={styles.customQInput} placeholder="Type your question..." value={q.question}
-                      onChange={e => updateQuestion(qi, "question", e.target.value)} />
+                    <input style={a.customInput} placeholder="Type your question..." value={q.question} onChange={e => updateQuestion(qi, "question", e.target.value)} />
                     {q.type === "multiple" && (
-                      <div style={styles.optionsWrap}>
+                      <div style={{ display: "flex", flexDirection: "column" as const, gap: "6px" }}>
                         {q.options.map((opt, oi) => (
-                          <div key={oi} style={styles.optionRow}>
-                            <input style={styles.optionInput} placeholder={`Option ${oi + 1}`} value={opt}
-                              onChange={e => updateOption(qi, oi, e.target.value)} />
-                            {q.options.length > 2 && <button style={styles.removeOptBtn} onClick={() => removeOption(qi, oi)}>✕</button>}
+                          <div key={oi} style={{ display: "flex", gap: "6px" }}>
+                            <input style={a.optInput} placeholder={`Option ${oi + 1}`} value={opt} onChange={e => updateOption(qi, oi, e.target.value)} />
+                            {q.options.length > 2 && <button style={a.removeBtn} onClick={() => removeOption(qi, oi)}>✕</button>}
                           </div>
                         ))}
-                        {q.options.length < 4 && <button style={styles.addOptBtn} onClick={() => addOption(qi)}>+ Add option</button>}
+                        {q.options.length < 4 && <button style={a.addOptBtn} onClick={() => addOption(qi)}>+ option</button>}
                       </div>
                     )}
                   </div>
                 ))}
-                <button style={styles.addQBtn} onClick={addQuestion}>+ Add Question</button>
+                <button style={a.addQBtn} onClick={addQuestion}>+ Add question</button>
               </div>
-              <button style={styles.sendQBtn} onClick={sendCustomQuestionnaire}>Send Questionnaire →</button>
+              <button style={a.sendBtn2} onClick={sendCustomQuestionnaire}>Send questionnaire →</button>
             </>)}
           </div>
         </div>
       )}
 
       {/* Sidebar */}
-      <div style={styles.sidebar}>
-        <div style={styles.sidebarTop}>
-          <span style={styles.sidebarTitle}>Tickets</span>
-          {openCount > 0 && <span style={styles.inboxCount}>{openCount} open</span>}
+      <div style={a.sidebar}>
+        <div style={a.sidebarHead}>
+          <div style={a.sidebarTitle}>Tickets</div>
+          {openCount > 0 && <span style={a.openPill}>{openCount} open</span>}
         </div>
-        <div style={styles.filterRow}>
+        <div style={a.filterRow}>
           {(["all", "open", "closed"] as const).map(f => (
             <button key={f} onClick={() => setFilter(f)}
-              style={{ ...styles.filterBtn, background: filter === f ? "#fff" : "transparent", color: filter === f ? "#000" : "#555" }}>
+              style={{ ...a.filterBtn, ...(filter === f ? a.filterBtnActive : {}) }}>
               {f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
         </div>
-        {filtered.length === 0 && <div style={styles.emptyFilter}>No {filter} tickets</div>}
-        {filtered.map((chat) => {
-          const isNew = hasNewMessage(chat);
-          return (
-            <div key={chat.id} onClick={() => selectChat(chat)}
-              style={{ ...styles.chatItem, background: selectedId === chat.id ? "#111" : "transparent" }}>
-              <div style={styles.chatItemTop}>
-                <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
-                  <span style={styles.chatName}>{chat.name}</span>
-                  {isNew && <span style={styles.newBadge}>New</span>}
+        <div style={{ flex: 1, overflowY: "auto" as const }}>
+          {filtered.length === 0 && <div style={a.emptyList}>No {filter} tickets</div>}
+          {filtered.map(chat => {
+            const isNew = hasNewMessage(chat);
+            return (
+              <div key={chat.id} onClick={() => selectChat(chat)}
+                style={{ ...a.chatRow, ...(selectedId === chat.id ? a.chatRowActive : {}) }}>
+                <div style={a.chatRowTop}>
+                  <span style={a.chatRowName}>{chat.name}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    {isNew && <span style={a.newDot} />}
+                    <span style={{ ...a.statusPill, background: chat.status === "closed" ? "#1a0808" : "#081a08", color: chat.status === "closed" ? "#ef4444" : "#22c55e", border: `1px solid ${chat.status === "closed" ? "#3a1010" : "#103a10"}` }}>
+                      {chat.status === "closed" ? "Closed" : "Open"}
+                    </span>
+                  </div>
                 </div>
-                <span style={{ ...styles.statusDot, background: chat.status === "closed" ? "#ef4444" : "#22c55e" }} />
+                <div style={a.chatRowPreview}>{chat.last_message?.slice(0, 42) || "No messages yet"}</div>
               </div>
-              <span style={styles.lastMsg}>{chat.last_message?.slice(0, 40) || "No messages yet"}</span>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
       {/* Main */}
-      <div style={styles.main}>
+      <div style={a.main}>
         {!selectedId ? (
-          <div style={styles.empty}>
-            <div style={{ fontSize: "2rem", marginBottom: "8px" }}>💬</div>
-            <div style={{ color: "#444", fontSize: "0.95rem" }}>Select a ticket to get started</div>
-            {openCount > 0 && <div style={{ fontSize: "0.8rem", color: "#22c55e", marginTop: "6px" }}>{openCount} ticket{openCount > 1 ? "s" : ""} waiting</div>}
+          <div style={a.mainEmpty}>
+            <div style={{ fontSize: "1.8rem", marginBottom: "10px", color: "#1a1a1a" }}>✉</div>
+            <div style={a.mainEmptyTitle}>No ticket selected</div>
+            <div style={a.mainEmptySub}>{openCount > 0 ? `${openCount} ticket${openCount > 1 ? "s" : ""} waiting for a response` : "All caught up"}</div>
           </div>
         ) : (<>
-          <div style={styles.chatHeader}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ ...styles.statusDotSm, background: isClosed ? "#ef4444" : "#22c55e" }} />
+          <div style={a.chatHeader}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div style={a.avatar}>{selectedChat?.name?.[0]?.toUpperCase()}</div>
               <div>
-                <div style={styles.chatHeaderName}>{selectedChat?.name}</div>
-                <div style={styles.chatHeaderSub}>{isClosed ? "Ticket closed" : "Ticket open"}</div>
+                <div style={a.chatHeaderName}>{selectedChat?.name}</div>
+                <div style={a.chatHeaderSub}>
+                  <span style={{ ...a.statusPill, background: isClosed ? "#1a0808" : "#081a08", color: isClosed ? "#ef4444" : "#22c55e", border: `1px solid ${isClosed ? "#3a1010" : "#103a10"}` }}>
+                    {isClosed ? "Closed" : "Open"}
+                  </span>
+                </div>
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               {deleteMode && (
-                <button style={styles.deleteModeTag} onClick={() => setDeleteMode(false)}>
-                  🗑 Delete mode on — click to turn off
+                <button style={a.deleteModeBtn} onClick={() => setDeleteMode(false)}>
+                  🗑 Delete mode · click to exit
                 </button>
               )}
-              <button style={styles.adminPanelBtn} onClick={() => { setAdminPanel(true); setPanelView("menu"); }}>
-                Admin Panel
-              </button>
+              <button style={a.panelBtn} onClick={() => { setAdminPanel(true); setPanelView("menu"); }}>Admin Panel</button>
               <button onClick={() => toggleStatus(selectedChat)}
-                style={{ ...styles.toggleBtn, borderColor: isClosed ? "#22c55e" : "#ef4444", color: isClosed ? "#22c55e" : "#ef4444" }}>
+                style={{ ...a.statusToggle, borderColor: isClosed ? "#22c55e" : "#ef4444", color: isClosed ? "#22c55e" : "#ef4444" }}>
                 {isClosed ? "Reopen" : "Close"}
               </button>
             </div>
           </div>
 
-          <div style={styles.messages}>
+          <div style={a.messages}>
             {messages.length === 0 && (
-              <div style={styles.noMessages}>No messages yet — waiting for {selectedChat?.name} to reach out.</div>
+              <div style={a.noMsgs}>No messages yet — waiting for {selectedChat?.name} to write in.</div>
             )}
-            {messages.map(renderMessage)}
+            {messages.map((m, i, arr) => renderMessage(m, i, arr))}
             <div ref={bottomRef} />
           </div>
 
-          <div style={styles.inputRow}>
-            <textarea
-              style={{ ...styles.chatInput, opacity: isClosed ? 0.4 : 1 }}
-              placeholder={isClosed ? "Ticket is closed" : `Reply to ${selectedChat?.name}...`}
-              value={reply}
-              disabled={isClosed}
-              onChange={(e) => setReply(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
-              rows={1}
-            />
-            <button style={{ ...styles.sendBtn, opacity: isClosed ? 0.4 : 1 }} onClick={sendReply} disabled={isClosed}>
-              Send
-            </button>
+          <div style={a.inputArea}>
+            <div style={{ ...a.inputBox, opacity: isClosed ? 0.4 : 1 }}>
+              <textarea
+                ref={textareaRef}
+                style={a.textarea}
+                placeholder={isClosed ? "Ticket is closed" : `Reply to ${selectedChat?.name}...`}
+                value={reply}
+                disabled={isClosed}
+                onChange={e => setReply(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+                rows={1}
+              />
+              <button style={{ ...a.sendBtn, ...((!reply.trim() || isClosed) ? a.sendBtnDisabled : {}) }}
+                onClick={sendReply} disabled={!reply.trim() || isClosed}>↑</button>
+            </div>
+            <div style={a.inputHint}>Enter to send · Shift+Enter for new line</div>
           </div>
         </>)}
       </div>
@@ -408,69 +416,72 @@ export default function Dashboard() {
   );
 }
 
-const styles: { [key: string]: React.CSSProperties } = {
+const a: { [key: string]: React.CSSProperties } = {
   wrap: { display: "flex", height: "100vh", background: "#000", color: "#fff" },
-  sidebar: { width: "280px", borderRight: "1px solid #1a1a1a", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" as const },
-  sidebarTop: { padding: "20px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" },
-  sidebarTitle: { fontWeight: "700", fontSize: "1rem", letterSpacing: "-0.3px" },
-  inboxCount: { background: "#22c55e", color: "#000", fontSize: "0.7rem", fontWeight: "700", padding: "3px 9px", borderRadius: "20px" },
-  filterRow: { display: "flex", gap: "4px", padding: "6px 12px 12px", borderBottom: "1px solid #1a1a1a" },
-  filterBtn: { border: "1px solid #222", padding: "4px 11px", borderRadius: "6px", fontSize: "0.76rem", cursor: "pointer", fontWeight: "600", transition: "all 0.1s" },
-  emptyFilter: { padding: "24px 16px", color: "#333", fontSize: "0.85rem", textAlign: "center" as const },
-  chatItem: { padding: "13px 16px", cursor: "pointer", borderBottom: "1px solid #0f0f0f", display: "flex", flexDirection: "column", gap: "5px", transition: "background 0.1s" },
-  chatItemTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  chatName: { fontWeight: "600", fontSize: "0.9rem" },
-  newBadge: { background: "#22c55e", color: "#000", fontSize: "0.6rem", fontWeight: "700", padding: "2px 6px", borderRadius: "20px" },
-  statusDot: { width: "8px", height: "8px", borderRadius: "50%", flexShrink: 0, display: "inline-block" },
-  statusDotSm: { width: "9px", height: "9px", borderRadius: "50%", display: "inline-block", flexShrink: 0 },
-  lastMsg: { color: "#444", fontSize: "0.78rem", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" },
+  sidebar: { width: "260px", borderRight: "1px solid #0f0f0f", display: "flex", flexDirection: "column", flexShrink: 0 },
+  sidebarHead: { padding: "20px 18px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #0a0a0a" },
+  sidebarTitle: { fontWeight: "700", fontSize: "0.9rem", letterSpacing: "-0.2px" },
+  openPill: { background: "#081a08", color: "#22c55e", border: "1px solid #103a10", fontSize: "0.68rem", fontWeight: "600", padding: "2px 8px", borderRadius: "20px" },
+  filterRow: { display: "flex", gap: "4px", padding: "10px 14px", borderBottom: "1px solid #0a0a0a" },
+  filterBtn: { border: "1px solid #141414", background: "transparent", color: "#333", padding: "4px 11px", borderRadius: "6px", fontSize: "0.74rem", cursor: "pointer", fontWeight: "500" },
+  filterBtnActive: { background: "#fff", color: "#000", borderColor: "#fff" },
+  emptyList: { padding: "20px 18px", color: "#222", fontSize: "0.82rem" },
+  chatRow: { padding: "12px 18px", cursor: "pointer", borderBottom: "1px solid #080808", display: "flex", flexDirection: "column" as const, gap: "5px", transition: "background 0.1s" },
+  chatRowActive: { background: "#0a0a0a" },
+  chatRowTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  chatRowName: { fontWeight: "600", fontSize: "0.87rem", color: "#ddd" },
+  newDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#22c55e", display: "inline-block" },
+  statusPill: { fontSize: "0.63rem", fontWeight: "600", padding: "2px 7px", borderRadius: "20px" },
+  chatRowPreview: { color: "#333", fontSize: "0.76rem", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" },
   main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
-  empty: { margin: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" },
-  chatHeader: { padding: "14px 20px", borderBottom: "1px solid #1a1a1a", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: "#000" },
-  chatHeaderName: { fontWeight: "700", fontSize: "0.95rem" },
-  chatHeaderSub: { fontSize: "0.72rem", color: "#444", marginTop: "2px" },
-  deleteModeTag: { fontSize: "0.72rem", color: "#ef4444", border: "1px solid #3a1010", background: "#1a0808", padding: "5px 10px", borderRadius: "6px", cursor: "pointer", fontWeight: "600" },
-  adminPanelBtn: { background: "#111", color: "#ccc", border: "1px solid #2a2a2a", padding: "6px 14px", borderRadius: "7px", fontSize: "0.82rem", fontWeight: "600", cursor: "pointer" },
-  toggleBtn: { background: "transparent", border: "1px solid", padding: "6px 14px", borderRadius: "7px", fontSize: "0.82rem", cursor: "pointer", fontWeight: "600" },
-  messages: { flex: 1, overflowY: "auto" as const, padding: "28px 24px", display: "flex", flexDirection: "column", gap: "16px" },
-  noMessages: { color: "#2a2a2a", fontSize: "0.85rem", textAlign: "center" as const, marginTop: "60px" },
-  userMsg: { background: "#0f0f0f", color: "#ddd", border: "1px solid #1e1e1e", borderRadius: "14px 14px 14px 3px", padding: "11px 15px", maxWidth: "68%", fontSize: "0.9rem", lineHeight: "1.6" },
-  adminMsg: { background: "#f5f5f5", color: "#000", borderRadius: "14px 14px 3px 14px", padding: "11px 15px", maxWidth: "68%", fontSize: "0.9rem", lineHeight: "1.6" },
-  questionnaireMsg: { background: "#081208", border: "1px solid #162816", borderRadius: "14px", padding: "16px 18px", maxWidth: "78%", fontSize: "0.88rem" },
-  timestamp: { fontSize: "0.7rem", color: "#3a3a3a", letterSpacing: "0.2px" },
-  inputRow: { display: "flex", gap: "10px", padding: "16px 20px", borderTop: "1px solid #1a1a1a", alignItems: "flex-end", flexShrink: 0 },
-  chatInput: { flex: 1, background: "#080808", border: "1px solid #1e1e1e", color: "#fff", padding: "12px 16px", borderRadius: "10px", fontSize: "0.92rem", outline: "none", resize: "none" as const, lineHeight: "1.5" },
-  sendBtn: { background: "#fff", color: "#000", border: "none", padding: "12px 24px", borderRadius: "10px", fontWeight: "700", cursor: "pointer", fontSize: "0.9rem" },
-  modalOverlay: { position: "fixed" as const, inset: 0, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },
-  modal: { background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: "16px", padding: "28px", width: "500px", maxWidth: "95vw", maxHeight: "85vh", display: "flex", flexDirection: "column", gap: "20px", overflowY: "auto" as const },
-  modalHeader: { display: "flex", alignItems: "center", justifyContent: "space-between" },
-  modalTitle: { fontSize: "1.05rem", fontWeight: "700" },
-  modalSub: { color: "#555", fontSize: "0.85rem", marginTop: "-12px" },
-  modalClose: { background: "none", border: "none", color: "#444", fontSize: "1rem", cursor: "pointer", padding: "4px" },
-  backBtn: { background: "none", border: "none", color: "#555", fontSize: "0.82rem", cursor: "pointer", padding: 0 },
-  panelGrid: { display: "flex", flexDirection: "column" as const, gap: "8px" },
-  panelBtn: { background: "#0f0f0f", border: "1px solid #1e1e1e", borderRadius: "12px", padding: "16px", cursor: "pointer", display: "flex", alignItems: "center", gap: "14px", textAlign: "left" as const },
-  panelBtnActive: { border: "1px solid #3a1010", background: "#120808" },
-  panelIcon: { fontSize: "1.4rem", flexShrink: 0 },
-  panelBtnLabel: { color: "#fff", fontWeight: "700", fontSize: "0.9rem", marginBottom: "2px" },
-  panelBtnSub: { color: "#444", fontSize: "0.78rem" },
-  previewList: { display: "flex", flexDirection: "column" as const, gap: "12px" },
-  previewItem: { display: "flex", gap: "12px", alignItems: "flex-start" },
-  previewNum: { background: "#111", color: "#555", width: "22px", height: "22px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.72rem", fontWeight: "700", flexShrink: 0 },
-  previewQ: { color: "#ccc", fontSize: "0.87rem", lineHeight: "1.5" },
-  previewOpts: { color: "#444", fontSize: "0.76rem", marginTop: "3px" },
-  sendQBtn: { background: "#fff", color: "#000", border: "none", padding: "13px", borderRadius: "10px", fontWeight: "700", cursor: "pointer", fontSize: "0.9rem" },
-  customScroll: { display: "flex", flexDirection: "column" as const, gap: "14px", overflowY: "auto" as const, maxHeight: "380px" },
-  customQuestion: { background: "#0f0f0f", border: "1px solid #1e1e1e", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column" as const, gap: "10px" },
-  customQHeader: { display: "flex", alignItems: "center", gap: "10px" },
-  customQNum: { color: "#444", fontWeight: "700", fontSize: "0.82rem", flexShrink: 0 },
-  typeSelect: { background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#ccc", padding: "5px 8px", borderRadius: "6px", fontSize: "0.78rem", cursor: "pointer", flex: 1, outline: "none" },
-  removeQBtn: { background: "none", border: "none", color: "#333", cursor: "pointer", fontSize: "0.82rem" },
-  customQInput: { background: "#080808", border: "1px solid #222", color: "#fff", padding: "10px 12px", borderRadius: "8px", fontSize: "0.87rem", outline: "none" },
-  optionsWrap: { display: "flex", flexDirection: "column" as const, gap: "7px" },
-  optionRow: { display: "flex", gap: "8px", alignItems: "center" },
-  optionInput: { flex: 1, background: "#080808", border: "1px solid #222", color: "#fff", padding: "8px 10px", borderRadius: "7px", fontSize: "0.82rem", outline: "none" },
-  removeOptBtn: { background: "none", border: "none", color: "#333", cursor: "pointer", fontSize: "0.8rem" },
-  addOptBtn: { background: "none", border: "1px dashed #222", color: "#444", padding: "6px", borderRadius: "7px", fontSize: "0.76rem", cursor: "pointer" },
-  addQBtn: { background: "none", border: "1px dashed #222", color: "#444", padding: "11px", borderRadius: "9px", fontSize: "0.83rem", cursor: "pointer" },
+  mainEmpty: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
+  mainEmptyTitle: { fontWeight: "600", fontSize: "0.95rem", color: "#222" },
+  mainEmptySub: { color: "#1a1a1a", fontSize: "0.82rem", marginTop: "5px" },
+  chatHeader: { padding: "14px 22px", borderBottom: "1px solid #0f0f0f", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 },
+  avatar: { width: "32px", height: "32px", borderRadius: "50%", background: "#111", border: "1px solid #1e1e1e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.8rem", fontWeight: "700", color: "#555", flexShrink: 0 },
+  chatHeaderName: { fontWeight: "600", fontSize: "0.9rem" },
+  chatHeaderSub: { marginTop: "3px" },
+  deleteModeBtn: { fontSize: "0.72rem", color: "#ef4444", border: "1px solid #2a0f0f", background: "#110808", padding: "5px 10px", borderRadius: "7px", cursor: "pointer", fontWeight: "500" },
+  panelBtn: { background: "#0d0d0d", color: "#888", border: "1px solid #1a1a1a", padding: "6px 14px", borderRadius: "8px", fontSize: "0.8rem", fontWeight: "500", cursor: "pointer" },
+  statusToggle: { background: "transparent", border: "1px solid", padding: "6px 14px", borderRadius: "8px", fontSize: "0.8rem", cursor: "pointer", fontWeight: "600" },
+  messages: { flex: 1, overflowY: "auto" as const, padding: "28px 28px 12px" },
+  noMsgs: { color: "#1e1e1e", fontSize: "0.85rem", textAlign: "center" as const, marginTop: "60px" },
+  timeDivider: { textAlign: "center" as const, color: "#1e1e1e", fontSize: "0.68rem", fontWeight: "500", margin: "16px 0 10px", letterSpacing: "0.04em" },
+  userMsg: { background: "#0d0d0d", color: "#ccc", border: "1px solid #141414", borderRadius: "4px 14px 14px 14px", padding: "11px 15px", maxWidth: "66%", fontSize: "0.88rem", lineHeight: "1.6", display: "inline-block" },
+  adminMsg: { background: "#f5f5f5", color: "#000", borderRadius: "14px 14px 3px 14px", padding: "11px 15px", maxWidth: "66%", fontSize: "0.88rem", lineHeight: "1.6", display: "inline-block" },
+  questionnaireMsg: { background: "#060e06", border: "1px solid #0d1e0d", borderRadius: "14px", padding: "16px 18px", display: "inline-block", maxWidth: "76%" },
+  inputArea: { padding: "12px 22px 18px", borderTop: "1px solid #0a0a0a", flexShrink: 0 },
+  inputBox: { display: "flex", gap: "10px", alignItems: "flex-end", background: "#080808", border: "1px solid #161616", borderRadius: "14px", padding: "10px 10px 10px 16px" },
+  textarea: { flex: 1, background: "transparent", border: "none", color: "#fff", fontSize: "0.9rem", outline: "none", resize: "none" as const, lineHeight: "1.55", maxHeight: "120px", overflowY: "auto" as const },
+  sendBtn: { background: "#fff", color: "#000", border: "none", width: "30px", height: "30px", borderRadius: "7px", fontWeight: "700", cursor: "pointer", fontSize: "0.95rem", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  sendBtnDisabled: { opacity: 0.15, cursor: "default" },
+  inputHint: { fontSize: "0.66rem", color: "#181818", marginTop: "7px", textAlign: "center" as const },
+  overlay: { position: "fixed" as const, inset: 0, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "20px" },
+  modal: { background: "#080808", border: "1px solid #1a1a1a", borderRadius: "18px", padding: "28px", width: "480px", maxWidth: "96vw", maxHeight: "88vh", display: "flex", flexDirection: "column" as const, gap: "18px", overflowY: "auto" as const },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
+  modalTitle: { fontSize: "1.05rem", fontWeight: "700", letterSpacing: "-0.3px" },
+  modalSub: { color: "#444", fontSize: "0.82rem", marginTop: "4px" },
+  modalCloseBtn: { background: "none", border: "none", color: "#333", fontSize: "1rem", cursor: "pointer", flexShrink: 0 },
+  backBtn: { background: "none", border: "none", color: "#444", fontSize: "0.8rem", cursor: "pointer", padding: 0 },
+  panelGrid: { display: "flex", flexDirection: "column" as const, gap: "7px" },
+  panelOption: { background: "#0a0a0a", border: "1px solid #141414", borderRadius: "12px", padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: "14px", textAlign: "left" as const, transition: "border-color 0.1s" },
+  panelOptionActive: { border: "1px solid #2a0f0f", background: "#0f0808" },
+  panelOptionLabel: { color: "#ccc", fontWeight: "600", fontSize: "0.87rem", marginBottom: "2px" },
+  panelOptionSub: { color: "#333", fontSize: "0.76rem" },
+  previewList: { display: "flex", flexDirection: "column" as const, gap: "11px" },
+  previewRow: { display: "flex", gap: "11px", alignItems: "flex-start" },
+  previewIdx: { background: "#111", color: "#444", width: "20px", height: "20px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.68rem", fontWeight: "700", flexShrink: 0 },
+  previewQ: { color: "#bbb", fontSize: "0.85rem", lineHeight: "1.5" },
+  previewOpts: { color: "#333", fontSize: "0.75rem", marginTop: "3px" },
+  sendBtn2: { background: "#fff", color: "#000", border: "none", padding: "12px", borderRadius: "10px", fontWeight: "700", cursor: "pointer", fontSize: "0.88rem" },
+  customScroll: { display: "flex", flexDirection: "column" as const, gap: "12px", maxHeight: "360px", overflowY: "auto" as const },
+  customQ: { background: "#0a0a0a", border: "1px solid #141414", borderRadius: "11px", padding: "13px", display: "flex", flexDirection: "column" as const, gap: "9px" },
+  customQTop: { display: "flex", alignItems: "center", gap: "9px" },
+  customQLabel: { color: "#333", fontWeight: "700", fontSize: "0.78rem", flexShrink: 0 },
+  typeSelect: { flex: 1, background: "#141414", border: "1px solid #1e1e1e", color: "#888", padding: "4px 8px", borderRadius: "6px", fontSize: "0.76rem", cursor: "pointer", outline: "none" },
+  removeBtn: { background: "none", border: "none", color: "#2a2a2a", cursor: "pointer", fontSize: "0.8rem" },
+  customInput: { background: "#040404", border: "1px solid #1a1a1a", color: "#ccc", padding: "9px 12px", borderRadius: "8px", fontSize: "0.85rem", outline: "none" },
+  optInput: { flex: 1, background: "#040404", border: "1px solid #1a1a1a", color: "#ccc", padding: "7px 10px", borderRadius: "7px", fontSize: "0.8rem", outline: "none" },
+  addOptBtn: { background: "none", border: "1px dashed #1a1a1a", color: "#2a2a2a", padding: "6px", borderRadius: "6px", fontSize: "0.74rem", cursor: "pointer" },
+  addQBtn: { background: "none", border: "1px dashed #1a1a1a", color: "#2a2a2a", padding: "10px", borderRadius: "9px", fontSize: "0.8rem", cursor: "pointer" },
 };
