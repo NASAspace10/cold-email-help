@@ -82,27 +82,33 @@ export default function Dashboard() {
 
   const selectedChat = chats.find((c) => c.id === selectedId);
   const filtered = chats.filter(c => filter === "all" ? true : c.status === filter);
+  const openCount = chats.filter(c => c.status !== "closed").length;
 
   return (
     <div style={styles.wrap}>
       <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>Tickets</div>
+        <div style={styles.sidebarTop}>
+          <span style={styles.sidebarTitle}>Tickets</span>
+          {openCount > 0 && (
+            <span style={styles.inboxCount}>{openCount} open</span>
+          )}
+        </div>
         <div style={styles.filterRow}>
-          {(["all","open","closed"] as const).map(f => (
+          {(["all", "open", "closed"] as const).map(f => (
             <button key={f} onClick={() => setFilter(f)}
               style={{ ...styles.filterBtn, background: filter === f ? "#fff" : "transparent", color: filter === f ? "#000" : "#666" }}>
               {f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
         </div>
-        {filtered.map((chat, i) => (
+        {filtered.map((chat) => (
           <div key={chat.id} onClick={() => selectChat(chat)}
             style={{ ...styles.chatItem, background: selectedId === chat.id ? "#1a1a1a" : "transparent" }}>
             <div style={styles.chatItemTop}>
               <span style={styles.chatName}>{chat.name}</span>
-              <div style={{ display:"flex", gap:"5px", alignItems:"center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                 {chat.has_unread && chat.status !== "closed" && <span style={styles.unreadDot} />}
-                <span style={{ ...styles.statusDot, background: chat.status === "closed" ? "#ef4444" : "#f97316" }} />
+                <span style={{ ...styles.statusDot, background: chat.status === "closed" ? "#ef4444" : "#22c55e" }} />
               </div>
             </div>
             <span style={styles.lastMsg}>{chat.last_message?.slice(0, 40) || "No messages yet"}</span>
@@ -116,24 +122,20 @@ export default function Dashboard() {
         ) : (
           <>
             <div style={styles.chatHeader}>
-              <span>{selectedChat?.name}</span>
-              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-                <span style={{ fontSize:"0.8rem", color: selectedChat?.status === "closed" ? "#ef4444" : "#22c55e" }}>
-                  {selectedChat?.status === "closed" ? "Closed" : "Open"}
-                </span>
-                <button
-                  onClick={() => toggleStatus(selectedChat)}
-                  style={{ ...styles.toggleBtn, borderColor: selectedChat?.status === "closed" ? "#22c55e" : "#ef4444", color: selectedChat?.status === "closed" ? "#22c55e" : "#ef4444" }}>
-                  {selectedChat?.status === "closed" ? "Reopen" : "Close"}
-                </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ ...styles.statusDotSm, background: selectedChat?.status === "closed" ? "#ef4444" : "#22c55e" }} />
+                <span>{selectedChat?.name}</span>
               </div>
+              <button
+                onClick={() => toggleStatus(selectedChat)}
+                style={{ ...styles.toggleBtn, borderColor: selectedChat?.status === "closed" ? "#22c55e" : "#ef4444", color: selectedChat?.status === "closed" ? "#22c55e" : "#ef4444" }}>
+                {selectedChat?.status === "closed" ? "Reopen" : "Close"}
+              </button>
             </div>
             <div style={styles.messages}>
               {messages.map((m) => (
-                <div key={m.id} style={{ display:"flex", flexDirection:"column", alignItems: m.sender === "admin" ? "flex-end" : "flex-start", gap:"3px" }}>
-                  <div style={m.sender === "user" ? styles.userMsg : styles.adminMsg}>
-                    {m.text}
-                  </div>
+                <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: m.sender === "admin" ? "flex-end" : "flex-start", gap: "3px" }}>
+                  <div style={m.sender === "user" ? styles.userMsg : styles.adminMsg}>{m.text}</div>
                   <span style={styles.timestamp}>{formatTime(m.created_at)}</span>
                 </div>
               ))}
@@ -146,7 +148,7 @@ export default function Dashboard() {
                 value={reply}
                 disabled={selectedChat?.status === "closed"}
                 onChange={(e) => setReply(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); }}}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
                 rows={1}
               />
               <button
@@ -164,26 +166,29 @@ export default function Dashboard() {
 }
 
 const styles: { [key: string]: React.CSSProperties } = {
-  wrap: { display:"flex", height:"100vh", background:"#000" },
-  sidebar: { width:"280px", borderRight:"1px solid #222", display:"flex", flexDirection:"column", flexShrink:0, overflowY:"auto" },
-  sidebarHeader: { padding:"20px 16px 8px", fontWeight:"700", fontSize:"1rem" },
-  filterRow: { display:"flex", gap:"4px", padding:"8px 12px 12px", borderBottom:"1px solid #222" },
-  filterBtn: { border:"1px solid #333", padding:"4px 10px", borderRadius:"6px", fontSize:"0.78rem", cursor:"pointer", fontWeight:"600" },
-  chatItem: { padding:"14px 16px", cursor:"pointer", borderBottom:"1px solid #111", display:"flex", flexDirection:"column", gap:"4px" },
-  chatItemTop: { display:"flex", justifyContent:"space-between", alignItems:"center" },
-  chatName: { fontWeight:"600", fontSize:"0.95rem" },
-  unreadDot: { width:"10px", height:"10px", borderRadius:"50%", background:"#f97316" },
-  statusDot: { width:"10px", height:"10px", borderRadius:"50%", flexShrink:0 },
-  lastMsg: { color:"#666", fontSize:"0.8rem", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" },
-  main: { flex:1, display:"flex", flexDirection:"column" },
-  empty: { margin:"auto", color:"#444", fontSize:"0.95rem" },
-  chatHeader: { padding:"16px 20px", borderBottom:"1px solid #222", fontWeight:"600", display:"flex", justifyContent:"space-between", alignItems:"center" },
-  toggleBtn: { background:"transparent", border:"1px solid", padding:"5px 12px", borderRadius:"6px", fontSize:"0.8rem", cursor:"pointer", fontWeight:"600" },
-  messages: { flex:1, overflowY:"auto", padding:"24px 16px", display:"flex", flexDirection:"column", gap:"12px" },
-  userMsg: { alignSelf:"flex-start", background:"#111", color:"#fff", border:"1px solid #222", borderRadius:"12px 12px 12px 2px", padding:"10px 14px", maxWidth:"70%", fontSize:"0.9rem", lineHeight:"1.5" },
-  adminMsg: { alignSelf:"flex-end", background:"#fff", color:"#000", borderRadius:"12px 12px 2px 12px", padding:"10px 14px", maxWidth:"70%", fontSize:"0.9rem", lineHeight:"1.5" },
-  timestamp: { fontSize:"0.7rem", color:"#444" },
-  inputRow: { display:"flex", gap:"10px", padding:"16px", borderTop:"1px solid #222", alignItems:"flex-end" },
-  chatInput: { flex:1, background:"#111", border:"1px solid #333", color:"#fff", padding:"12px 14px", borderRadius:"8px", fontSize:"0.95rem", outline:"none", resize:"none", lineHeight:"1.5" },
-  sendBtn: { background:"#fff", color:"#000", border:"none", padding:"12px 20px", borderRadius:"8px", fontWeight:"600", cursor:"pointer" },
+  wrap: { display: "flex", height: "100vh", background: "#000" },
+  sidebar: { width: "280px", borderRight: "1px solid #222", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" as const },
+  sidebarTop: { padding: "20px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" },
+  sidebarTitle: { fontWeight: "700", fontSize: "1rem" },
+  inboxCount: { background: "#22c55e", color: "#000", fontSize: "0.72rem", fontWeight: "700", padding: "3px 8px", borderRadius: "20px" },
+  filterRow: { display: "flex", gap: "4px", padding: "8px 12px 12px", borderBottom: "1px solid #222" },
+  filterBtn: { border: "1px solid #333", padding: "4px 10px", borderRadius: "6px", fontSize: "0.78rem", cursor: "pointer", fontWeight: "600" },
+  chatItem: { padding: "14px 16px", cursor: "pointer", borderBottom: "1px solid #111", display: "flex", flexDirection: "column", gap: "4px" },
+  chatItemTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  chatName: { fontWeight: "600", fontSize: "0.95rem" },
+  unreadDot: { width: "8px", height: "8px", borderRadius: "50%", background: "#fff" },
+  statusDot: { width: "9px", height: "9px", borderRadius: "50%", flexShrink: 0 },
+  statusDotSm: { width: "8px", height: "8px", borderRadius: "50%", display: "inline-block" },
+  lastMsg: { color: "#666", fontSize: "0.8rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  main: { flex: 1, display: "flex", flexDirection: "column" },
+  empty: { margin: "auto", color: "#444", fontSize: "0.95rem" },
+  chatHeader: { padding: "16px 20px", borderBottom: "1px solid #222", fontWeight: "600", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  toggleBtn: { background: "transparent", border: "1px solid", padding: "5px 12px", borderRadius: "6px", fontSize: "0.8rem", cursor: "pointer", fontWeight: "600" },
+  messages: { flex: 1, overflowY: "auto" as const, padding: "24px 16px", display: "flex", flexDirection: "column", gap: "12px" },
+  userMsg: { background: "#111", color: "#fff", border: "1px solid #222", borderRadius: "12px 12px 12px 2px", padding: "10px 14px", maxWidth: "70%", fontSize: "0.9rem", lineHeight: "1.5" },
+  adminMsg: { background: "#fff", color: "#000", borderRadius: "12px 12px 2px 12px", padding: "10px 14px", maxWidth: "70%", fontSize: "0.9rem", lineHeight: "1.5" },
+  timestamp: { fontSize: "0.7rem", color: "#444" },
+  inputRow: { display: "flex", gap: "10px", padding: "16px", borderTop: "1px solid #222", alignItems: "flex-end" },
+  chatInput: { flex: 1, background: "#111", border: "1px solid #333", color: "#fff", padding: "12px 14px", borderRadius: "8px", fontSize: "0.95rem", outline: "none", resize: "none" as const, lineHeight: "1.5" },
+  sendBtn: { background: "#fff", color: "#000", border: "none", padding: "12px 20px", borderRadius: "8px", fontWeight: "600", cursor: "pointer" },
 };
