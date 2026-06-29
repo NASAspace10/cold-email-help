@@ -1,5 +1,14 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+
+const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!;
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
 
 export default function Home() {
   const [stage, setStage] = useState("loading");
@@ -16,10 +25,15 @@ export default function Home() {
   const [answers, setAnswers] = useState<string[]>([]);
   const [showSidebar, setShowSidebar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [adminTyping, setAdminTyping] = useState(false);
+  const [notifPermission, setNotifPermission] = useState<string>("default");
   const answersRef = useRef<string[]>([]);
   const pendingQRef = useRef<any>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const typingTimeoutRef = useRef<any>(null);
+  const isTypingRef = useRef(false);
+  const prevMessageCountRef = useRef(0);
 
   const setAnswersSafe = (vals: string[]) => {
     answersRef.current = vals;
@@ -32,6 +46,38 @@ export default function Home() {
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
+
+  useEffect(() => {
+    if (typeof Notification !== "undefined") {
+      setNotifPermission(Notification.permission);
+    }
+  }, []);
+
+  const registerPush = async (chatId: string) => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    try {
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+      await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subscription: sub, chatId, role: "user" }),
+      });
+    } catch (e) {}
+  };
+
+  const requestNotificationPermission = async () => {
+    if (typeof Notification === "undefined") return;
+    const perm = await Notification.requestPermission();
+    setNotifPermission(perm);
+    if (perm === "granted" && userId) {
+      await registerPush(userId);
+    }
+  };
 
   useEffect(() => {
     const saved = localStorage.getItem("seenMessages");
@@ -68,20 +114,60 @@ export default function Home() {
     }
   }, [stage, chats]);
 
+  // Mark messages as seen when chat is open
+  const markSeen = useCallback(async (chatId: string) => {
+    await fetch("/api/seen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId }),
+    });
+  }, []);
+
   useEffect(() => {
     if (!selectedChatId) return;
     const fetchMessages = async () => {
       const res = await fetch(`/api/messages?chatId=${selectedChatId}`);
       const data = await res.json();
+
+      // Check for new admin messages to trigger browser notification
+      const prevCount = prevMessageCountRef.current;
+      const newAdminMsgs = data.filter((m: any) => m.sender === "admin").length;
+      const prevAdminMsgs = messages.filter((m: any) => m.sender === "admin").length;
+      if (newAdminMsgs > prevAdminMsgs && prevCount > 0 && document.hidden) {
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("Cold Email Help", { body: "You have a new reply!", icon: "/favicon.ico" });
+        }
+      }
+      prevMessageCountRef.current = data.length;
+
       setMessages(data);
       const updated = { ...seenMessages, [selectedChatId]: data.length };
       setSeenMessages(updated);
       localStorage.setItem("seenMessages", JSON.stringify(updated));
+      markSeen(selectedChatId);
     };
     fetchMessages();
-    const interval = setInterval(fetchMessages, 3000);
+    const interval = setInterval(fetchMessages, 2000);
     return () => clearInterval(interval);
   }, [selectedChatId]);
+
+  // Poll for admin typing status
+  useEffect(() => {
+    if (!selectedChatId) return;
+    const checkTyping = async () => {
+      const res = await fetch(`/api/chats?userId=${userId}`);
+      const data = await res.json();
+      const chat = data.find((c: any) => c.id === selectedChatId);
+      if (chat?.typing_admin && chat?.typing_admin_at) {
+        const age = Date.now() - new Date(chat.typing_admin_at).getTime();
+        setAdminTyping(age < 4000);
+      } else {
+        setAdminTyping(false);
+      }
+    };
+    const interval = setInterval(checkTyping, 1500);
+    return () => clearInterval(interval);
+  }, [selectedChatId, userId]);
 
   useEffect(() => {
     if (!selectedChatId) return;
@@ -108,7 +194,7 @@ export default function Home() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, adminTyping]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -116,6 +202,28 @@ export default function Home() {
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + "px";
     }
   }, [newMessage]);
+
+  const sendTyping = async (chatId: string, isTyping: boolean) => {
+    await fetch("/api/typing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId, sender: "user", isTyping }),
+    });
+  };
+
+  const handleTyping = (val: string) => {
+    setNewMessage(val);
+    if (!selectedChatId) return;
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      sendTyping(selectedChatId, true);
+    }
+    clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      isTypingRef.current = false;
+      sendTyping(selectedChatId, false);
+    }, 2500);
+  };
 
   const handleStart = async () => {
     if (!inputName.trim()) return;
@@ -132,6 +240,11 @@ export default function Home() {
     setName(trimmed);
     setSelectedChatId(id);
     setStage("tickets");
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      setTimeout(() => requestNotificationPermission(), 2000);
+    } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      setTimeout(() => registerPush(id), 1000);
+    }
   };
 
   const sendMessage = async () => {
@@ -140,10 +253,19 @@ export default function Home() {
     if (selectedChat?.status === "closed") return;
     const text = newMessage.trim();
     setNewMessage("");
+    isTypingRef.current = false;
+    clearTimeout(typingTimeoutRef.current);
+    await sendTyping(selectedChatId, false);
     await fetch("/api/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: selectedChatId, text, sender: "user" }),
+    });
+    // Notify admin
+    await fetch("/api/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId: selectedChatId, role: "admin", title: `Message from ${name}`, body: text.slice(0, 80) }),
     });
   };
 
@@ -196,6 +318,10 @@ export default function Home() {
 
   const selectedChat = chats.find(c => c.id === selectedChatId);
   const isClosed = selectedChat?.status === "closed";
+  const totalNew = chats.filter(c => {
+    const seen = seenMessages[c.id] ?? 0;
+    return c.last_sender === "admin" && (c.message_count ?? 0) > seen;
+  }).length;
 
   const formatTime = (ts: string) => {
     if (!ts) return "";
@@ -217,27 +343,21 @@ export default function Home() {
     return chat.last_sender === "admin" && (chat.message_count ?? 0) > seen;
   };
 
-  const totalNew = chats.filter(hasNewMessage).length;
-
   const renderMessage = (m: any, index: number, arr: any[]) => {
     const isQ = m.text?.startsWith("📋");
     const isUser = m.sender === "user";
     const prev = arr[index - 1];
+    const isLast = index === arr.length - 1;
     const showTime = !prev || new Date(m.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60 * 1000;
 
     return (
       <div key={m.id}>
         {showTime && <div style={s.timeDivider}>{formatTime(m.created_at)}</div>}
-        <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: "4px" }}>
+        <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: isLast ? "2px" : "4px" }}>
           <div style={isQ ? s.questionnaireMsg : isUser ? s.userMsg : s.adminMsg}>
             {isQ
               ? m.text.split("\n").map((line: string, i: number) => (
-                <div key={i} style={{
-                  lineHeight: "1.75",
-                  fontWeight: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "600" : line.match(/^\d+\./) ? "500" : "400",
-                  color: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "#fff" : line.startsWith("   →") ? "#4ade80" : "#999",
-                  fontSize: "0.82rem",
-                }}>{line || "\u00A0"}</div>
+                <div key={i} style={{ lineHeight: "1.75", fontWeight: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "600" : "400", color: line.includes("QUESTIONNAIRE") || line.includes("ANSWERS") ? "#fff" : line.startsWith("   →") ? "#4ade80" : "#999", fontSize: "0.82rem" }}>{line || "\u00A0"}</div>
               ))
               : m.text}
           </div>
@@ -248,29 +368,16 @@ export default function Home() {
 
   if (stage === "loading") return <div style={{ background: "#000", height: "100vh" }} />;
 
-  // WELCOME
   if (stage === "welcome") return (
     <div style={s.page}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #000; color: #fff; font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
-        ::placeholder { color: #333; }
-        textarea, input, button { font-family: 'Inter', sans-serif; }
-        @media (max-width: 768px) {
-          .hero-title { font-size: 2rem !important; }
-          .hero-cards { grid-template-columns: 1fr !important; }
-          .nav-pad { padding: 16px 20px !important; }
-          .hero-pad { padding: 48px 20px 32px !important; }
-        }
-      `}</style>
-      <nav style={s.nav} className="nav-pad">
+      <style>{globalStyles}</style>
+      <nav style={s.nav}>
         <span style={s.navLogo}>✉ Cold Email Help</span>
         <a href="/admin" style={s.navLink}>Admin</a>
       </nav>
-      <div style={s.hero} className="hero-pad">
+      <div style={s.hero}>
         <div style={s.heroBadge}>Free · No signup required</div>
-        <h1 style={s.heroTitle} className="hero-title">Cold email professors.<br />Get into research.</h1>
+        <h1 style={{ ...s.heroTitle, fontSize: isMobile ? "2.1rem" : "3rem" }}>Cold email professors.<br />Get into research.</h1>
         <p style={s.heroSub}>Most students never hear back. I'll help you write emails that actually get responses — based on what worked for me.</p>
         <button style={s.heroCTA} onClick={() => setStage("name")}>Get personalized help →</button>
         <div style={s.heroFeatures}>
@@ -285,24 +392,17 @@ export default function Home() {
           { icon: "✍️", title: "Writing your email", text: "What to say, how long it should be, and what professors actually want to see." },
           { icon: "🔁", title: "Following up", text: "When to follow up, what to write, and how not to come across as pushy." },
         ].map((c, i) => (
-          <div key={i} style={s.card}>
-            <div style={s.cardIcon}>{c.icon}</div>
-            <div style={s.cardTitle}>{c.title}</div>
-            <div style={s.cardText}>{c.text}</div>
-          </div>
+          <div key={i} style={s.card}><div style={s.cardIcon}>{c.icon}</div><div style={s.cardTitle}>{c.title}</div><div style={s.cardText}>{c.text}</div></div>
         ))}
       </div>
       <footer style={s.footer}>Built by a high schooler, for high schoolers.</footer>
     </div>
   );
 
-  // HOME (returning user)
   if (stage === "home") return (
     <div style={s.page}>
-      <style>{`* { box-sizing: border-box; margin: 0; padding: 0; } body { background: #000; color: #fff; font-family: 'Inter', -apple-system, sans-serif; -webkit-font-smoothing: antialiased; } button, input, textarea { font-family: inherit; }`}</style>
-      <nav style={s.nav}>
-        <span style={s.navLogo}>✉ Cold Email Help</span>
-      </nav>
+      <style>{globalStyles}</style>
+      <nav style={s.nav}><span style={s.navLogo}>✉ Cold Email Help</span></nav>
       <div style={{ ...s.hero, padding: isMobile ? "60px 24px 40px" : "80px 24px 40px" }}>
         <h1 style={{ ...s.heroTitle, fontSize: isMobile ? "1.8rem" : "2rem" }}>Welcome back, {name}.</h1>
         <p style={s.heroSub}>What would you like to do?</p>
@@ -314,10 +414,9 @@ export default function Home() {
     </div>
   );
 
-  // NAME ENTRY
   if (stage === "name") return (
     <div style={s.centerPage}>
-      <style>{`* { box-sizing: border-box; margin: 0; padding: 0; } body { background: #000; color: #fff; font-family: 'Inter', -apple-system, sans-serif; -webkit-font-smoothing: antialiased; } button, input { font-family: inherit; }`}</style>
+      <style>{globalStyles}</style>
       <div style={{ ...s.nameCard, width: isMobile ? "calc(100% - 40px)" : "360px", padding: isMobile ? "32px 24px" : "44px 40px" }}>
         <div style={s.nameLogo}>✉ Cold Email Help</div>
         <h2 style={s.nameTitle}>What's your first name?</h2>
@@ -329,18 +428,19 @@ export default function Home() {
     </div>
   );
 
-  // TICKETS VIEW
   return (
     <div style={{ display: "flex", height: "100vh", background: "#000", color: "#fff", overflow: "hidden", fontFamily: "'Inter', -apple-system, sans-serif", WebkitFontSmoothing: "antialiased" } as React.CSSProperties}>
-      <style>{`
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::placeholder { color: #333; }
-        textarea, input, button { font-family: inherit; }
-        ::-webkit-scrollbar { width: 3px; }
-        ::-webkit-scrollbar-thumb { background: #1e1e1e; border-radius: 4px; }
-      `}</style>
+      <style>{globalStyles + typingAnimation}</style>
 
-      {/* Confirm close modal */}
+      {/* Notification prompt banner */}
+      {notifPermission === "default" && stage === "tickets" && (
+        <div style={s.notifBanner}>
+          <span style={s.notifText}>🔔 Get notified when you receive a reply</span>
+          <button style={s.notifBtn} onClick={requestNotificationPermission}>Enable</button>
+          <button style={s.notifDismiss} onClick={() => setNotifPermission("denied")}>✕</button>
+        </div>
+      )}
+
       {confirmClose && (
         <div style={s.overlay}>
           <div style={{ ...s.modalBox, width: isMobile ? "calc(100% - 32px)" : "380px" }}>
@@ -354,7 +454,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Questionnaire modal */}
       {pendingQ && !isClosed && (
         <div style={s.overlay}>
           <div style={{ ...s.modalBox, maxWidth: "480px", width: isMobile ? "calc(100% - 24px)" : "480px", maxHeight: "90vh", overflowY: "auto" as const, gap: "20px" }}>
@@ -370,11 +469,8 @@ export default function Home() {
                   {q.type === "multiple" ? (
                     <div style={s.qOpts}>
                       {q.options.filter((o: string) => o.trim()).map((opt: string, oi: number) => (
-                        <button key={oi}
-                          onClick={() => { const a = [...answersRef.current]; a[i] = opt; setAnswersSafe(a); }}
-                          style={{ ...s.qOptBtn, ...(answers[i] === opt ? s.qOptBtnSelected : {}) }}>
-                          {opt}
-                        </button>
+                        <button key={oi} onClick={() => { const a = [...answersRef.current]; a[i] = opt; setAnswersSafe(a); }}
+                          style={{ ...s.qOptBtn, ...(answers[i] === opt ? s.qOptBtnSelected : {}) }}>{opt}</button>
                       ))}
                     </div>
                   ) : (
@@ -389,7 +485,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* Mobile sidebar drawer */}
+      {/* Mobile drawer */}
       {isMobile && showSidebar && (
         <div style={{ position: "fixed" as const, inset: 0, zIndex: 50 }}>
           <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,0.7)" }} onClick={() => setShowSidebar(false)} />
@@ -399,28 +495,23 @@ export default function Home() {
               <button style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "1.2rem" }} onClick={() => setShowSidebar(false)}>✕</button>
             </div>
             <div style={{ overflowY: "auto" as const, flex: 1 }}>
-              {chats.map((chat, i) => {
-                const isNew = hasNewMessage(chat);
-                return (
-                  <div key={chat.id} onClick={() => { setSelectedChatId(chat.id); setShowSidebar(false); }}
-                    style={{ padding: "14px 20px", borderBottom: "1px solid #0f0f0f", display: "flex", flexDirection: "column" as const, gap: "5px", background: selectedChatId === chat.id ? "#111" : "transparent" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span style={{ fontWeight: "600", fontSize: "0.88rem", color: "#ddd" }}>Ticket #{chats.length - i}</span>
-                        {isNew && <span style={s.newDot} />}
-                      </div>
-                      <span style={{ ...s.statusPill, background: chat.status === "closed" ? "#1a0808" : "#081a08", color: chat.status === "closed" ? "#ef4444" : "#22c55e", border: `1px solid ${chat.status === "closed" ? "#3a1010" : "#103a10"}` }}>
-                        {chat.status === "closed" ? "Closed" : "Open"}
-                      </span>
+              {chats.map((chat, i) => (
+                <div key={chat.id} onClick={() => { setSelectedChatId(chat.id); setShowSidebar(false); }}
+                  style={{ padding: "14px 20px", borderBottom: "1px solid #0f0f0f", display: "flex", flexDirection: "column" as const, gap: "5px", background: selectedChatId === chat.id ? "#111" : "transparent" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontWeight: "600", fontSize: "0.88rem", color: "#ddd" }}>Ticket #{chats.length - i}</span>
+                      {hasNewMessage(chat) && <span style={s.newDot} />}
                     </div>
-                    <div style={{ color: "#444", fontSize: "0.8rem", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" }}>{chat.last_message?.slice(0, 40) || "No messages yet"}</div>
+                    <span style={{ ...s.statusPill, background: chat.status === "closed" ? "#1a0808" : "#081a08", color: chat.status === "closed" ? "#ef4444" : "#22c55e", border: `1px solid ${chat.status === "closed" ? "#3a1010" : "#103a10"}` }}>
+                      {chat.status === "closed" ? "Closed" : "Open"}
+                    </span>
                   </div>
-                );
-              })}
+                  <div style={{ color: "#444", fontSize: "0.8rem", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" }}>{chat.last_message?.slice(0, 40) || "No messages yet"}</div>
+                </div>
+              ))}
               <div style={{ padding: "14px 20px" }}>
-                <button onClick={openNewTicket} style={{ width: "100%", background: "#111", border: "1px solid #1e1e1e", color: "#888", padding: "12px", borderRadius: "10px", fontSize: "0.88rem", cursor: "pointer", fontWeight: "500" }}>
-                  + Open new ticket
-                </button>
+                <button onClick={openNewTicket} style={{ width: "100%", background: "#111", border: "1px solid #1e1e1e", color: "#888", padding: "12px", borderRadius: "10px", fontSize: "0.88rem", cursor: "pointer" }}>+ Open new ticket</button>
               </div>
             </div>
           </div>
@@ -438,25 +529,21 @@ export default function Home() {
             <button style={s.newTicketBtn} onClick={openNewTicket}>+ New</button>
           </div>
           {chats.length === 0 && <div style={s.sidebarEmpty}>No tickets yet</div>}
-          {chats.map((chat, i) => {
-            const isNew = hasNewMessage(chat);
-            const isSelected = selectedChatId === chat.id;
-            return (
-              <div key={chat.id} onClick={() => setSelectedChatId(chat.id)}
-                style={{ ...s.ticketRow, ...(isSelected ? s.ticketRowActive : {}) }}>
-                <div style={s.ticketRowTop}>
-                  <span style={s.ticketNum}>#{chats.length - i}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    {isNew && <span style={s.newDot} />}
-                    <span style={{ ...s.statusPill, background: chat.status === "closed" ? "#1a0808" : "#081a08", color: chat.status === "closed" ? "#ef4444" : "#22c55e", border: `1px solid ${chat.status === "closed" ? "#3a1010" : "#103a10"}` }}>
-                      {chat.status === "closed" ? "Closed" : "Open"}
-                    </span>
-                  </div>
+          {chats.map((chat, i) => (
+            <div key={chat.id} onClick={() => setSelectedChatId(chat.id)}
+              style={{ ...s.ticketRow, ...(selectedChatId === chat.id ? s.ticketRowActive : {}) }}>
+              <div style={s.ticketRowTop}>
+                <span style={s.ticketNum}>#{chats.length - i}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  {hasNewMessage(chat) && <span style={s.newDot} />}
+                  <span style={{ ...s.statusPill, background: chat.status === "closed" ? "#1a0808" : "#081a08", color: chat.status === "closed" ? "#ef4444" : "#22c55e", border: `1px solid ${chat.status === "closed" ? "#3a1010" : "#103a10"}` }}>
+                    {chat.status === "closed" ? "Closed" : "Open"}
+                  </span>
                 </div>
-                <div style={s.ticketPreview}>{chat.last_message?.slice(0, 38) || "No messages yet"}</div>
               </div>
-            );
-          })}
+              <div style={s.ticketPreview}>{chat.last_message?.slice(0, 38) || "No messages yet"}</div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -466,17 +553,16 @@ export default function Home() {
           <div style={s.chatEmpty}>
             <div style={s.chatEmptyIcon}>✉</div>
             <div style={s.chatEmptyTitle}>Select a ticket</div>
-            <div style={s.chatEmptyBody}>Choose a ticket from the sidebar to view the conversation.</div>
+            <div style={s.chatEmptyBody}>Choose a ticket to view the conversation.</div>
           </div>
         ) : (<>
-          {/* Chat header */}
           <div style={{ ...s.chatHeader, padding: isMobile ? "12px 16px" : "14px 24px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               {isMobile && (
                 <button onClick={() => setShowSidebar(true)}
                   style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "1.1rem", padding: "2px 6px 2px 0", position: "relative" as const }}>
                   ☰
-                  {totalNew > 0 && <span style={{ position: "absolute" as const, top: "-2px", right: "-2px", background: "#22c55e", width: "8px", height: "8px", borderRadius: "50%", display: "block" }} />}
+                  {totalNew > 0 && <span style={{ position: "absolute" as const, top: "-2px", right: "-2px", background: "#22c55e", width: "7px", height: "7px", borderRadius: "50%", display: "block" }} />}
                 </button>
               )}
               <div style={s.avatarCircle}>CE</div>
@@ -485,19 +571,17 @@ export default function Home() {
                 <div style={s.chatHeaderSub}>
                   {isClosed
                     ? <span style={{ color: "#ef4444" }}>Ticket closed</span>
+                    : adminTyping
+                    ? <span style={{ color: "#22c55e" }}>Typing...</span>
                     : <><span style={s.onlineDot} />Typically replies within a few hours</>}
                 </div>
               </div>
             </div>
             {!isClosed && (
-              <button style={{ ...s.closeTicketBtn, fontSize: isMobile ? "0.72rem" : "0.78rem", padding: isMobile ? "5px 10px" : "6px 14px" }}
-                onClick={() => setConfirmClose(true)}>
-                Close
-              </button>
+              <button style={{ ...s.closeTicketBtn, fontSize: isMobile ? "0.72rem" : "0.78rem" }} onClick={() => setConfirmClose(true)}>Close</button>
             )}
           </div>
 
-          {/* Messages */}
           <div style={{ ...s.messages, padding: isMobile ? "20px 16px 12px" : "28px 28px 16px" }}>
             <div style={{ ...s.introCard, marginBottom: isMobile ? "16px" : "24px" }}>
               <div style={s.introAvatar}>CE</div>
@@ -508,7 +592,20 @@ export default function Home() {
                 </div>
               </div>
             </div>
+
             {messages.map((m, i, arr) => renderMessage(m, i, arr))}
+
+            {/* Typing indicator */}
+            {adminTyping && (
+              <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "6px" }}>
+                <div style={s.typingBubble}>
+                  <span className="typing-dot" style={s.typingDot} />
+                  <span className="typing-dot" style={{ ...s.typingDot, animationDelay: "0.2s" }} />
+                  <span className="typing-dot" style={{ ...s.typingDot, animationDelay: "0.4s" }} />
+                </div>
+              </div>
+            )}
+
             {isClosed && (
               <div style={s.closedNotice}>
                 <span>This ticket is closed.</span>
@@ -518,7 +615,6 @@ export default function Home() {
             <div ref={bottomRef} />
           </div>
 
-          {/* Input */}
           {!isClosed && (
             <div style={{ padding: isMobile ? "10px 12px 16px" : "14px 24px 20px", borderTop: "1px solid #0f0f0f", flexShrink: 0 }}>
               <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", background: "#080808", border: "1px solid #1a1a1a", borderRadius: "14px", padding: isMobile ? "8px 8px 8px 14px" : "10px 10px 10px 16px" }}>
@@ -527,15 +623,13 @@ export default function Home() {
                   style={{ flex: 1, background: "transparent", border: "none", color: "#fff", fontSize: isMobile ? "1rem" : "0.92rem", outline: "none", resize: "none" as const, lineHeight: "1.55", maxHeight: "120px", overflowY: "auto" as const }}
                   placeholder="Message Cold Email Help..."
                   value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
+                  onChange={(e) => handleTyping(e.target.value)}
                   onKeyDown={(e) => { if (!isMobile) handleKeyDown(e, sendMessage); }}
                   rows={1}
                 />
                 <button
                   style={{ background: newMessage.trim() ? "#fff" : "#111", color: newMessage.trim() ? "#000" : "#333", border: "none", width: isMobile ? "36px" : "32px", height: isMobile ? "36px" : "32px", borderRadius: "9px", fontWeight: "700", cursor: newMessage.trim() ? "pointer" : "default", fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}
-                  onClick={sendMessage}
-                  disabled={!newMessage.trim()}
-                >↑</button>
+                  onClick={sendMessage} disabled={!newMessage.trim()}>↑</button>
               </div>
               {!isMobile && <div style={{ fontSize: "0.66rem", color: "#181818", marginTop: "7px", textAlign: "center" as const }}>Press Enter to send · Shift+Enter for new line</div>}
             </div>
@@ -546,10 +640,30 @@ export default function Home() {
   );
 }
 
+const globalStyles = `
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; color: #fff; font-family: 'Inter', -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+  ::placeholder { color: #333; }
+  textarea, input, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-thumb { background: #1e1e1e; border-radius: 4px; }
+`;
+
+const typingAnimation = `
+  @keyframes typingBounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+  .typing-dot {
+    animation: typingBounce 1.2s infinite;
+  }
+`;
+
 const s: { [key: string]: React.CSSProperties } = {
-  page: { display: "flex", flexDirection: "column", minHeight: "100vh", background: "#000", fontFamily: "'Inter', -apple-system, sans-serif" },
+  page: { display: "flex", flexDirection: "column", minHeight: "100vh", background: "#000" },
   nav: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 40px", borderBottom: "1px solid #0f0f0f" },
-  navLogo: { fontWeight: "600", fontSize: "0.9rem", color: "#fff", letterSpacing: "-0.2px" },
+  navLogo: { fontWeight: "600", fontSize: "0.9rem", color: "#fff" },
   navLink: { color: "#444", fontSize: "0.85rem", textDecoration: "none" },
   hero: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "80px 24px 40px", textAlign: "center" as const, gap: "20px" },
   heroBadge: { background: "#0f0f0f", border: "1px solid #1e1e1e", color: "#555", fontSize: "0.75rem", fontWeight: "500", padding: "5px 12px", borderRadius: "20px" },
@@ -559,19 +673,23 @@ const s: { [key: string]: React.CSSProperties } = {
   heroSecondary: { background: "transparent", color: "#666", border: "1px solid #1e1e1e", padding: "14px 28px", borderRadius: "10px", fontSize: "0.95rem", fontWeight: "500", cursor: "pointer" },
   heroFeatures: { display: "flex", gap: "20px", flexWrap: "wrap" as const, justifyContent: "center" },
   heroFeat: { color: "#333", fontSize: "0.82rem", fontWeight: "500" },
-  heroCards: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1px", background: "#0f0f0f", borderTop: "1px solid #0f0f0f", borderBottom: "1px solid #0f0f0f" },
+  heroCards: { display: "grid", gap: "1px", background: "#0f0f0f", borderTop: "1px solid #0f0f0f", borderBottom: "1px solid #0f0f0f" },
   card: { background: "#000", padding: "28px 24px", display: "flex", flexDirection: "column" as const, gap: "10px" },
   cardIcon: { fontSize: "1.3rem" },
   cardTitle: { fontWeight: "600", fontSize: "0.9rem", color: "#fff" },
   cardText: { color: "#444", fontSize: "0.83rem", lineHeight: "1.65" },
   footer: { padding: "20px 40px", color: "#222", fontSize: "0.78rem", textAlign: "center" as const },
   centerPage: { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "#000", padding: "20px" },
-  nameCard: { background: "#080808", border: "1px solid #1a1a1a", borderRadius: "18px", padding: "44px 40px", display: "flex", flexDirection: "column" as const, gap: "16px" },
+  nameCard: { background: "#080808", border: "1px solid #1a1a1a", borderRadius: "18px", display: "flex", flexDirection: "column" as const, gap: "16px" },
   nameLogo: { fontWeight: "600", fontSize: "0.85rem", color: "#333", marginBottom: "4px" },
   nameTitle: { fontSize: "1.4rem", fontWeight: "700", letterSpacing: "-0.4px" },
   nameSub: { color: "#444", fontSize: "0.85rem", lineHeight: "1.5" },
   nameInput: { background: "#000", border: "1px solid #1e1e1e", color: "#fff", padding: "13px 15px", borderRadius: "10px", fontSize: "1rem", outline: "none" },
   nameBtn: { background: "#fff", color: "#000", border: "none", padding: "13px", borderRadius: "10px", fontSize: "0.95rem", fontWeight: "700", cursor: "pointer" },
+  notifBanner: { position: "fixed" as const, top: 0, left: 0, right: 0, background: "#0a0a0a", borderBottom: "1px solid #1a1a1a", padding: "10px 20px", display: "flex", alignItems: "center", gap: "12px", zIndex: 200, justifyContent: "center" },
+  notifText: { color: "#888", fontSize: "0.85rem" },
+  notifBtn: { background: "#fff", color: "#000", border: "none", padding: "6px 14px", borderRadius: "7px", fontSize: "0.82rem", fontWeight: "700", cursor: "pointer" },
+  notifDismiss: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "0.9rem", marginLeft: "4px" },
   sidebar: { width: "240px", borderRight: "1px solid #0f0f0f", display: "flex", flexDirection: "column" as const, flexShrink: 0, overflowY: "auto" as const },
   sidebarTop: { padding: "18px 16px 14px" },
   sidebarLogo: { background: "none", border: "none", color: "#555", fontWeight: "600", fontSize: "0.82rem", cursor: "pointer", padding: 0 },
@@ -590,22 +708,24 @@ const s: { [key: string]: React.CSSProperties } = {
   chatEmptyIcon: { fontSize: "2rem", color: "#1a1a1a" },
   chatEmptyTitle: { fontWeight: "600", fontSize: "1rem", color: "#2a2a2a" },
   chatEmptyBody: { color: "#222", fontSize: "0.85rem" },
-  chatHeader: { padding: "14px 24px", borderBottom: "1px solid #0f0f0f", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 },
+  chatHeader: { borderBottom: "1px solid #0f0f0f", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 },
   avatarCircle: { width: "32px", height: "32px", borderRadius: "50%", background: "#111", border: "1px solid #1e1e1e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.6rem", fontWeight: "700", color: "#444", flexShrink: 0 },
   chatHeaderTitle: { fontWeight: "600", fontSize: "0.9rem" },
   chatHeaderSub: { fontSize: "0.7rem", color: "#333", marginTop: "2px", display: "flex", alignItems: "center", gap: "5px" },
   onlineDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#22c55e", display: "inline-block" },
-  closeTicketBtn: { background: "transparent", border: "1px solid #1e1e1e", color: "#444", padding: "6px 14px", borderRadius: "8px", fontSize: "0.78rem", cursor: "pointer" },
-  messages: { flex: 1, overflowY: "auto" as const, padding: "28px 28px 16px" },
-  introCard: { display: "flex", gap: "10px", marginBottom: "24px", alignItems: "flex-start" },
+  closeTicketBtn: { background: "transparent", border: "1px solid #1e1e1e", color: "#444", padding: "6px 14px", borderRadius: "8px", cursor: "pointer" },
+  messages: { flex: 1, overflowY: "auto" as const },
+  introCard: { display: "flex", gap: "10px", alignItems: "flex-start" },
   introAvatar: { width: "28px", height: "28px", borderRadius: "50%", background: "#111", border: "1px solid #1e1e1e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.58rem", fontWeight: "700", color: "#444", flexShrink: 0, marginTop: "2px" },
   introText: { display: "flex", flexDirection: "column" as const, gap: "5px" },
   introName: { fontSize: "0.72rem", fontWeight: "600", color: "#444" },
-  introMsg: { background: "#0a0a0a", border: "1px solid #141414", borderRadius: "4px 14px 14px 14px", padding: "12px 14px", color: "#666", fontSize: "0.88rem", lineHeight: "1.65", maxWidth: "440px" },
-  timeDivider: { textAlign: "center" as const, color: "#222", fontSize: "0.68rem", fontWeight: "500", margin: "14px 0 8px", letterSpacing: "0.02em" },
+  introMsg: { background: "#0a0a0a", border: "1px solid #141414", borderRadius: "4px 14px 14px 14px", padding: "12px 14px", color: "#666", lineHeight: "1.65", maxWidth: "440px" },
+  timeDivider: { textAlign: "center" as const, color: "#222", fontSize: "0.68rem", fontWeight: "500", margin: "14px 0 8px" },
   userMsg: { background: "#fff", color: "#000", borderRadius: "14px 14px 3px 14px", padding: "11px 15px", maxWidth: "78%", fontSize: "0.9rem", lineHeight: "1.6", display: "inline-block" },
   adminMsg: { background: "#0d0d0d", color: "#ccc", border: "1px solid #161616", borderRadius: "4px 14px 14px 14px", padding: "11px 15px", maxWidth: "78%", fontSize: "0.9rem", lineHeight: "1.6", display: "inline-block" },
   questionnaireMsg: { background: "#060f06", border: "1px solid #0f200f", borderRadius: "14px", padding: "14px 16px", display: "inline-block", maxWidth: "85%" },
+  typingBubble: { background: "#0d0d0d", border: "1px solid #161616", borderRadius: "4px 14px 14px 14px", padding: "12px 16px", display: "flex", alignItems: "center", gap: "5px" },
+  typingDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#555", display: "inline-block" },
   closedNotice: { display: "flex", alignItems: "center", gap: "12px", color: "#333", fontSize: "0.82rem", margin: "16px 0 8px", padding: "14px 16px", background: "#080808", borderRadius: "10px", border: "1px solid #111", flexWrap: "wrap" as const },
   reopenBtn: { background: "none", border: "none", color: "#555", fontSize: "0.82rem", cursor: "pointer", fontWeight: "500", padding: 0, textDecoration: "underline" },
   overlay: { position: "fixed" as const, inset: 0, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "20px" },
