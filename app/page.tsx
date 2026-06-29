@@ -33,7 +33,7 @@ export default function Home() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<any>(null);
   const isTypingRef = useRef(false);
-  const prevMessageCountRef = useRef(0);
+  const lastNotifiedIdRef = useRef<string>("");
 
   const setAnswersSafe = (vals: string[]) => {
     answersRef.current = vals;
@@ -79,6 +79,14 @@ export default function Home() {
     }
   };
 
+  const markSeen = useCallback(async (chatId: string) => {
+    await fetch("/api/seen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId }),
+    });
+  }, []);
+
   useEffect(() => {
     const saved = localStorage.getItem("seenMessages");
     if (saved) setSeenMessages(JSON.parse(saved));
@@ -114,32 +122,24 @@ export default function Home() {
     }
   }, [stage, chats]);
 
-  // Mark messages as seen when chat is open
-  const markSeen = useCallback(async (chatId: string) => {
-    await fetch("/api/seen", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId }),
-    });
-  }, []);
-
   useEffect(() => {
     if (!selectedChatId) return;
     const fetchMessages = async () => {
       const res = await fetch(`/api/messages?chatId=${selectedChatId}`);
       const data = await res.json();
-
-      // Check for new admin messages to trigger browser notification
-      const prevCount = prevMessageCountRef.current;
-      const newAdminMsgs = data.filter((m: any) => m.sender === "admin").length;
-      const prevAdminMsgs = messages.filter((m: any) => m.sender === "admin").length;
-      if (newAdminMsgs > prevAdminMsgs && prevCount > 0 && document.hidden) {
-        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-          new Notification("Cold Email Help", { body: "You have a new reply!", icon: "/favicon.ico" });
-        }
+      const lastMsg = data[data.length - 1];
+      if (
+        lastMsg &&
+        lastMsg.sender === "admin" &&
+        String(lastMsg.id) !== lastNotifiedIdRef.current &&
+        document.hidden &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        new Notification("Cold Email Help", { body: lastMsg.text?.slice(0, 80), icon: "/favicon.ico" });
+        lastNotifiedIdRef.current = String(lastMsg.id);
       }
-      prevMessageCountRef.current = data.length;
-
+      if (lastMsg) lastNotifiedIdRef.current = String(lastMsg.id);
       setMessages(data);
       const updated = { ...seenMessages, [selectedChatId]: data.length };
       setSeenMessages(updated);
@@ -151,9 +151,8 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [selectedChatId]);
 
-  // Poll for admin typing status
   useEffect(() => {
-    if (!selectedChatId) return;
+    if (!selectedChatId || !userId) return;
     const checkTyping = async () => {
       const res = await fetch(`/api/chats?userId=${userId}`);
       const data = await res.json();
@@ -261,7 +260,6 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: selectedChatId, text, sender: "user" }),
     });
-    // Notify admin
     await fetch("/api/push/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -347,13 +345,12 @@ export default function Home() {
     const isQ = m.text?.startsWith("📋");
     const isUser = m.sender === "user";
     const prev = arr[index - 1];
-    const isLast = index === arr.length - 1;
     const showTime = !prev || new Date(m.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60 * 1000;
 
     return (
       <div key={m.id}>
         {showTime && <div style={s.timeDivider}>{formatTime(m.created_at)}</div>}
-        <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: isLast ? "2px" : "4px" }}>
+        <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: "4px" }}>
           <div style={isQ ? s.questionnaireMsg : isUser ? s.userMsg : s.adminMsg}>
             {isQ
               ? m.text.split("\n").map((line: string, i: number) => (
@@ -370,7 +367,7 @@ export default function Home() {
 
   if (stage === "welcome") return (
     <div style={s.page}>
-      <style>{globalStyles}</style>
+      <style>{globalStyles + typingAnimation}</style>
       <nav style={s.nav}>
         <span style={s.navLogo}>✉ Cold Email Help</span>
         <a href="/admin" style={s.navLink}>Admin</a>
@@ -401,7 +398,7 @@ export default function Home() {
 
   if (stage === "home") return (
     <div style={s.page}>
-      <style>{globalStyles}</style>
+      <style>{globalStyles + typingAnimation}</style>
       <nav style={s.nav}><span style={s.navLogo}>✉ Cold Email Help</span></nav>
       <div style={{ ...s.hero, padding: isMobile ? "60px 24px 40px" : "80px 24px 40px" }}>
         <h1 style={{ ...s.heroTitle, fontSize: isMobile ? "1.8rem" : "2rem" }}>Welcome back, {name}.</h1>
@@ -416,7 +413,7 @@ export default function Home() {
 
   if (stage === "name") return (
     <div style={s.centerPage}>
-      <style>{globalStyles}</style>
+      <style>{globalStyles + typingAnimation}</style>
       <div style={{ ...s.nameCard, width: isMobile ? "calc(100% - 40px)" : "360px", padding: isMobile ? "32px 24px" : "44px 40px" }}>
         <div style={s.nameLogo}>✉ Cold Email Help</div>
         <h2 style={s.nameTitle}>What's your first name?</h2>
@@ -432,8 +429,7 @@ export default function Home() {
     <div style={{ display: "flex", height: "100vh", background: "#000", color: "#fff", overflow: "hidden", fontFamily: "'Inter', -apple-system, sans-serif", WebkitFontSmoothing: "antialiased" } as React.CSSProperties}>
       <style>{globalStyles + typingAnimation}</style>
 
-      {/* Notification prompt banner */}
-      {notifPermission === "default" && stage === "tickets" && (
+      {notifPermission === "default" && (
         <div style={s.notifBanner}>
           <span style={s.notifText}>🔔 Get notified when you receive a reply</span>
           <button style={s.notifBtn} onClick={requestNotificationPermission}>Enable</button>
@@ -485,7 +481,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Mobile drawer */}
       {isMobile && showSidebar && (
         <div style={{ position: "fixed" as const, inset: 0, zIndex: 50 }}>
           <div style={{ position: "absolute" as const, inset: 0, background: "rgba(0,0,0,0.7)" }} onClick={() => setShowSidebar(false)} />
@@ -518,7 +513,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Desktop sidebar */}
       {!isMobile && (
         <div style={s.sidebar}>
           <div style={s.sidebarTop}>
@@ -547,7 +541,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Chat area */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, overflow: "hidden" }}>
         {!selectedChatId ? (
           <div style={s.chatEmpty}>
@@ -592,10 +585,7 @@ export default function Home() {
                 </div>
               </div>
             </div>
-
             {messages.map((m, i, arr) => renderMessage(m, i, arr))}
-
-            {/* Typing indicator */}
             {adminTyping && (
               <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "6px" }}>
                 <div style={s.typingBubble}>
@@ -605,7 +595,6 @@ export default function Home() {
                 </div>
               </div>
             )}
-
             {isClosed && (
               <div style={s.closedNotice}>
                 <span>This ticket is closed.</span>
@@ -655,9 +644,7 @@ const typingAnimation = `
     0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
     30% { transform: translateY(-4px); opacity: 1; }
   }
-  .typing-dot {
-    animation: typingBounce 1.2s infinite;
-  }
+  .typing-dot { animation: typingBounce 1.2s infinite; }
 `;
 
 const s: { [key: string]: React.CSSProperties } = {
@@ -689,7 +676,7 @@ const s: { [key: string]: React.CSSProperties } = {
   notifBanner: { position: "fixed" as const, top: 0, left: 0, right: 0, background: "#0a0a0a", borderBottom: "1px solid #1a1a1a", padding: "10px 20px", display: "flex", alignItems: "center", gap: "12px", zIndex: 200, justifyContent: "center" },
   notifText: { color: "#888", fontSize: "0.85rem" },
   notifBtn: { background: "#fff", color: "#000", border: "none", padding: "6px 14px", borderRadius: "7px", fontSize: "0.82rem", fontWeight: "700", cursor: "pointer" },
-  notifDismiss: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "0.9rem", marginLeft: "4px" },
+  notifDismiss: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "0.9rem" },
   sidebar: { width: "240px", borderRight: "1px solid #0f0f0f", display: "flex", flexDirection: "column" as const, flexShrink: 0, overflowY: "auto" as const },
   sidebarTop: { padding: "18px 16px 14px" },
   sidebarLogo: { background: "none", border: "none", color: "#555", fontWeight: "600", fontSize: "0.82rem", cursor: "pointer", padding: 0 },

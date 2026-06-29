@@ -33,7 +33,7 @@ export default function Dashboard() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<any>(null);
   const isTypingRef = useRef(false);
-  const prevMessageCountRef = useRef(0);
+  const lastNotifiedIdRef = useRef<string>("");
 
   const STANDARD_QUESTIONS: Question[] = [
     { question: "What grade are you in?", type: "text", options: [] },
@@ -85,19 +85,23 @@ export default function Dashboard() {
   const fetchMessages = async (id: string) => {
     const res = await fetch(`/api/messages?chatId=${id}`);
     const data = await res.json();
-
-    // Check for new user messages for browser notification
-    const prevCount = prevMessageCountRef.current;
-    const newUserMsgs = data.filter((m: any) => m.sender === "user").length;
-    const prevUserMsgs = messages.filter((m: any) => m.sender === "user").length;
-    if (newUserMsgs > prevUserMsgs && prevCount > 0 && document.hidden) {
+    const lastMsg = data[data.length - 1];
+    if (
+      lastMsg &&
+      lastMsg.sender === "user" &&
+      String(lastMsg.id) !== lastNotifiedIdRef.current &&
+      document.hidden &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted"
+    ) {
       const chat = chats.find(c => c.id === id);
-      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-        new Notification(`Message from ${chat?.name ?? "User"}`, { body: data[data.length - 1]?.text?.slice(0, 80), icon: "/favicon.ico" });
-      }
+      new Notification(`Message from ${chat?.name ?? "User"}`, {
+        body: lastMsg.text?.slice(0, 80),
+        icon: "/favicon.ico",
+      });
+      lastNotifiedIdRef.current = String(lastMsg.id);
     }
-    prevMessageCountRef.current = data.length;
-
+    if (lastMsg) lastNotifiedIdRef.current = String(lastMsg.id);
     setMessages(data);
     const updated = { ...seenCounts, [id]: data.length };
     setSeenCounts(updated);
@@ -185,7 +189,6 @@ export default function Dashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: selectedId, text, sender: "admin" }),
     });
-    // Notify user
     await fetch("/api/push/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -280,7 +283,6 @@ export default function Dashboard() {
   const openCount = chats.filter(c => c.status !== "closed").length;
   const isClosed = selectedChat?.status === "closed";
 
-  // Find last admin message to show seen receipt
   const lastAdminMsgIdx = [...messages].reverse().findIndex(m => m.sender === "admin");
   const lastAdminMsg = lastAdminMsgIdx >= 0 ? messages[messages.length - 1 - lastAdminMsgIdx] : null;
 
@@ -289,7 +291,6 @@ export default function Dashboard() {
     const isAdmin = m.sender === "admin";
     const isHov = hoveredMsg === m.id;
     const prev = arr[index - 1];
-    const isLast = index === arr.length - 1;
     const showTime = !prev || new Date(m.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60 * 1000;
     const isLastAdminMsg = lastAdminMsg && m.id === lastAdminMsg.id;
 
@@ -297,7 +298,7 @@ export default function Dashboard() {
       <div key={m.id}>
         {showTime && <div style={a.timeDivider}>{formatTime(m.created_at)}</div>}
         <div
-          style={{ display: "flex", justifyContent: isAdmin ? "flex-end" : "flex-start", marginBottom: isLast ? "2px" : "4px" }}
+          style={{ display: "flex", justifyContent: isAdmin ? "flex-end" : "flex-start", marginBottom: "4px" }}
           onMouseEnter={() => deleteMode && setHoveredMsg(m.id)}
           onMouseLeave={() => setHoveredMsg(null)}
           onClick={() => deleteMode && deleteMessage(m.id)}
@@ -315,7 +316,6 @@ export default function Dashboard() {
             {deleteMode && isHov && <div style={{ fontSize: "0.68rem", color: "#ef4444", marginTop: "5px" }}>click to delete</div>}
           </div>
         </div>
-        {/* Seen receipt under last admin message */}
         {isAdmin && isLastAdminMsg && m.seen_at && (
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
             <span style={a.seenReceipt}>✓✓ Seen {formatTime(m.seen_at)}</span>
@@ -347,7 +347,10 @@ export default function Dashboard() {
           <div style={a.modal} onClick={e => e.stopPropagation()}>
             {panelView === "menu" && (<>
               <div style={a.modalHeader}>
-                <div><div style={a.modalTitle}>Admin Panel</div><div style={a.modalSub}>Actions for <span style={{ color: "#fff" }}>{selectedChat?.name}</span></div></div>
+                <div>
+                  <div style={a.modalTitle}>Admin Panel</div>
+                  <div style={a.modalSub}>Actions for <span style={{ color: "#fff" }}>{selectedChat?.name}</span></div>
+                </div>
                 <button style={a.modalCloseBtn} onClick={() => { setAdminPanel(false); setPanelView("menu"); }}>✕</button>
               </div>
               <div style={a.panelGrid}>
@@ -358,11 +361,15 @@ export default function Dashboard() {
                 ].map((item, i) => (
                   <button key={i} style={{ ...a.panelOption, ...(deleteMode && i === 2 ? a.panelOptionActive : {}) }} onClick={item.action}>
                     <span style={{ fontSize: "1.2rem" }}>{item.icon}</span>
-                    <div style={{ textAlign: "left" as const }}><div style={a.panelOptionLabel}>{item.label}</div><div style={a.panelOptionSub}>{item.sub}</div></div>
+                    <div style={{ textAlign: "left" as const }}>
+                      <div style={a.panelOptionLabel}>{item.label}</div>
+                      <div style={a.panelOptionSub}>{item.sub}</div>
+                    </div>
                   </button>
                 ))}
               </div>
             </>)}
+
             {panelView === "questionnaire" && (<>
               <div style={a.modalHeader}>
                 <button style={a.backBtn} onClick={() => setPanelView("menu")}>← Back</button>
@@ -374,12 +381,16 @@ export default function Dashboard() {
                 {STANDARD_QUESTIONS.map((q, i) => (
                   <div key={i} style={a.previewRow}>
                     <span style={a.previewIdx}>{i + 1}</span>
-                    <div><div style={a.previewQ}>{q.question}</div>{q.type === "multiple" && <div style={a.previewOpts}>{q.options.join(" / ")}</div>}</div>
+                    <div>
+                      <div style={a.previewQ}>{q.question}</div>
+                      {q.type === "multiple" && <div style={a.previewOpts}>{q.options.join(" / ")}</div>}
+                    </div>
                   </div>
                 ))}
               </div>
               <button style={a.sendBtn2} onClick={sendStandardQuestionnaire}>Send questionnaire →</button>
             </>)}
+
             {panelView === "custom" && (<>
               <div style={a.modalHeader}>
                 <button style={a.backBtn} onClick={() => setPanelView("menu")}>← Back</button>
@@ -434,7 +445,8 @@ export default function Dashboard() {
         <div style={{ flex: 1, overflowY: "auto" as const }}>
           {filtered.length === 0 && <div style={a.emptyList}>No {filter} tickets</div>}
           {filtered.map(chat => (
-            <div key={chat.id} onClick={() => selectChat(chat)} style={{ ...a.chatRow, ...(selectedId === chat.id ? a.chatRowActive : {}) }}>
+            <div key={chat.id} onClick={() => selectChat(chat)}
+              style={{ ...a.chatRow, ...(selectedId === chat.id ? a.chatRowActive : {}) }}>
               <div style={a.chatRowTop}>
                 <span style={a.chatRowName}>{chat.name}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -466,24 +478,31 @@ export default function Dashboard() {
                 <div style={{ marginTop: "3px", display: "flex", alignItems: "center", gap: "6px" }}>
                   {userTyping
                     ? <span style={{ fontSize: "0.72rem", color: "#22c55e" }}>Typing...</span>
-                    : <span style={{ ...a.statusPill, background: isClosed ? "#1a0808" : "#081a08", color: isClosed ? "#ef4444" : "#22c55e", border: `1px solid ${isClosed ? "#3a1010" : "#103a10"}` }}>{isClosed ? "Closed" : "Open"}</span>}
+                    : <span style={{ ...a.statusPill, background: isClosed ? "#1a0808" : "#081a08", color: isClosed ? "#ef4444" : "#22c55e", border: `1px solid ${isClosed ? "#3a1010" : "#103a10"}` }}>
+                        {isClosed ? "Closed" : "Open"}
+                      </span>}
                 </div>
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              {deleteMode && <button style={a.deleteModeBtn} onClick={() => setDeleteMode(false)}>🗑 Delete mode · click to exit</button>}
+              {deleteMode && (
+                <button style={a.deleteModeBtn} onClick={() => setDeleteMode(false)}>
+                  🗑 Delete mode · click to exit
+                </button>
+              )}
               <button style={a.panelBtn} onClick={() => { setAdminPanel(true); setPanelView("menu"); }}>Admin Panel</button>
-              <button onClick={() => toggleStatus(selectedChat)} style={{ ...a.statusToggle, borderColor: isClosed ? "#22c55e" : "#ef4444", color: isClosed ? "#22c55e" : "#ef4444" }}>
+              <button onClick={() => toggleStatus(selectedChat)}
+                style={{ ...a.statusToggle, borderColor: isClosed ? "#22c55e" : "#ef4444", color: isClosed ? "#22c55e" : "#ef4444" }}>
                 {isClosed ? "Reopen" : "Close"}
               </button>
             </div>
           </div>
 
           <div style={a.messages}>
-            {messages.length === 0 && <div style={a.noMsgs}>No messages yet — waiting for {selectedChat?.name} to write in.</div>}
+            {messages.length === 0 && (
+              <div style={a.noMsgs}>No messages yet — waiting for {selectedChat?.name} to write in.</div>
+            )}
             {messages.map((m, i, arr) => renderMessage(m, i, arr))}
-
-            {/* User typing indicator */}
             {userTyping && (
               <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "6px" }}>
                 <div style={a.typingBubble}>
@@ -498,14 +517,22 @@ export default function Dashboard() {
 
           <div style={a.inputArea}>
             <div style={{ ...a.inputBox, opacity: isClosed ? 0.4 : 1 }}>
-              <textarea ref={textareaRef} style={a.textarea}
+              <textarea
+                ref={textareaRef}
+                style={a.textarea}
                 placeholder={isClosed ? "Ticket is closed" : `Reply to ${selectedChat?.name}...`}
-                value={reply} disabled={isClosed}
+                value={reply}
+                disabled={isClosed}
                 onChange={e => handleReplyChange(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
-                rows={1} />
-              <button style={{ ...a.sendBtn, ...(!reply.trim() || isClosed ? a.sendBtnDisabled : {}) }}
-                onClick={sendReply} disabled={!reply.trim() || isClosed}>↑</button>
+                rows={1}
+              />
+              <button
+                style={{ ...a.sendBtn, ...(!reply.trim() || isClosed ? a.sendBtnDisabled : {}) }}
+                onClick={sendReply}
+                disabled={!reply.trim() || isClosed}>
+                ↑
+              </button>
             </div>
             <div style={a.inputHint}>Enter to send · Shift+Enter for new line</div>
           </div>
