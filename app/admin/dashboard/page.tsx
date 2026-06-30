@@ -33,7 +33,6 @@ export default function Dashboard() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<any>(null);
   const isTypingRef = useRef(false);
-  const lastNotifiedIdRef = useRef<string>("");
 
   const STANDARD_QUESTIONS: Question[] = [
     { question: "What grade are you in?", type: "text", options: [] },
@@ -61,13 +60,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (localStorage.getItem("adminAuth") !== "true") router.push("/admin");
-    const saved = localStorage.getItem("adminSeenCounts");
-    if (saved) setSeenCounts(JSON.parse(saved));
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       registerAdminPush();
     } else if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission().then(p => { if (p === "granted") registerAdminPush(); });
     }
+    const saved = localStorage.getItem("adminSeenCounts");
+    if (saved) setSeenCounts(JSON.parse(saved));
   }, []);
 
   const fetchChats = async () => {
@@ -85,23 +84,6 @@ export default function Dashboard() {
   const fetchMessages = async (id: string) => {
     const res = await fetch(`/api/messages?chatId=${id}`);
     const data = await res.json();
-    const lastMsg = data[data.length - 1];
-    if (
-      lastMsg &&
-      lastMsg.sender === "user" &&
-      String(lastMsg.id) !== lastNotifiedIdRef.current &&
-      document.hidden &&
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted"
-    ) {
-      const chat = chats.find(c => c.id === id);
-      new Notification(`Message from ${chat?.name ?? "User"}`, {
-        body: lastMsg.text?.slice(0, 80),
-        icon: "/favicon.ico",
-      });
-      lastNotifiedIdRef.current = String(lastMsg.id);
-    }
-    if (lastMsg) lastNotifiedIdRef.current = String(lastMsg.id);
     setMessages(data);
     const updated = { ...seenCounts, [id]: data.length };
     setSeenCounts(updated);
@@ -113,6 +95,40 @@ export default function Dashboard() {
     fetchMessages(selectedId);
     const interval = setInterval(() => fetchMessages(selectedId), 2000);
     return () => clearInterval(interval);
+  }, [selectedId]);
+
+  // Presence heartbeat — tells the server "I'm actively viewing this exact ticket right now"
+  useEffect(() => {
+    if (!selectedId) return;
+
+    const updatePresence = (active: boolean) => {
+      fetch("/api/presence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId: selectedId, role: "admin", active }),
+      });
+    };
+
+    const handleVisibility = () => updatePresence(!document.hidden);
+    const handleFocus = () => updatePresence(true);
+    const handleBlur = () => updatePresence(false);
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+
+    updatePresence(!document.hidden);
+    const heartbeat = setInterval(() => {
+      if (!document.hidden) updatePresence(true);
+    }, 4000);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      clearInterval(heartbeat);
+      updatePresence(false);
+    };
   }, [selectedId]);
 
   // Poll for user typing

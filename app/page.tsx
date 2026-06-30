@@ -33,7 +33,6 @@ export default function Home() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeoutRef = useRef<any>(null);
   const isTypingRef = useRef(false);
-  const lastNotifiedIdRef = useRef<string>("");
 
   const setAnswersSafe = (vals: string[]) => {
     answersRef.current = vals;
@@ -74,8 +73,8 @@ export default function Home() {
     if (typeof Notification === "undefined") return;
     const perm = await Notification.requestPermission();
     setNotifPermission(perm);
-    if (perm === "granted" && userId) {
-      await registerPush(userId);
+    if (perm === "granted" && selectedChatId) {
+      await registerPush(selectedChatId);
     }
   };
 
@@ -122,33 +121,57 @@ export default function Home() {
     }
   }, [stage, chats]);
 
+  // Fetch messages, mark seen only when tab is actually focused
   useEffect(() => {
     if (!selectedChatId) return;
     const fetchMessages = async () => {
       const res = await fetch(`/api/messages?chatId=${selectedChatId}`);
       const data = await res.json();
-      const lastMsg = data[data.length - 1];
-      if (
-        lastMsg &&
-        lastMsg.sender === "admin" &&
-        String(lastMsg.id) !== lastNotifiedIdRef.current &&
-        document.hidden &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted"
-      ) {
-        new Notification("Cold Email Help", { body: lastMsg.text?.slice(0, 80), icon: "/favicon.ico" });
-        lastNotifiedIdRef.current = String(lastMsg.id);
-      }
-      if (lastMsg) lastNotifiedIdRef.current = String(lastMsg.id);
       setMessages(data);
       const updated = { ...seenMessages, [selectedChatId]: data.length };
       setSeenMessages(updated);
       localStorage.setItem("seenMessages", JSON.stringify(updated));
-      markSeen(selectedChatId);
+      if (!document.hidden) {
+        markSeen(selectedChatId);
+      }
     };
     fetchMessages();
     const interval = setInterval(fetchMessages, 2000);
     return () => clearInterval(interval);
+  }, [selectedChatId]);
+
+  // Presence heartbeat — tells the server "I'm actively viewing this exact ticket right now"
+  useEffect(() => {
+    if (!selectedChatId) return;
+
+    const updatePresence = (active: boolean) => {
+      fetch("/api/presence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId: selectedChatId, role: "user", active }),
+      });
+    };
+
+    const handleVisibility = () => updatePresence(!document.hidden);
+    const handleFocus = () => updatePresence(true);
+    const handleBlur = () => updatePresence(false);
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+
+    updatePresence(!document.hidden);
+    const heartbeat = setInterval(() => {
+      if (!document.hidden) updatePresence(true);
+    }, 4000);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      clearInterval(heartbeat);
+      updatePresence(false);
+    };
   }, [selectedChatId]);
 
   useEffect(() => {
@@ -239,11 +262,6 @@ export default function Home() {
     setName(trimmed);
     setSelectedChatId(id);
     setStage("tickets");
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      setTimeout(() => requestNotificationPermission(), 2000);
-    } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      setTimeout(() => registerPush(id), 1000);
-    }
   };
 
   const sendMessage = async () => {
@@ -429,11 +447,20 @@ export default function Home() {
     <div style={{ display: "flex", height: "100vh", background: "#000", color: "#fff", overflow: "hidden", fontFamily: "'Inter', -apple-system, sans-serif", WebkitFontSmoothing: "antialiased" } as React.CSSProperties}>
       <style>{globalStyles + typingAnimation}</style>
 
+      {/* Notification permission popup */}
       {notifPermission === "default" && (
-        <div style={s.notifBanner}>
-          <span style={s.notifText}>🔔 Get notified when you receive a reply</span>
-          <button style={s.notifBtn} onClick={requestNotificationPermission}>Enable</button>
-          <button style={s.notifDismiss} onClick={() => setNotifPermission("denied")}>✕</button>
+        <div style={s.overlay}>
+          <div style={{ ...s.modalBox, width: isMobile ? "calc(100% - 32px)" : "360px", textAlign: "center" as const, alignItems: "center" }}>
+            <div style={{ fontSize: "2.2rem" }}>🔔</div>
+            <h3 style={{ ...s.modalTitle, fontSize: "1.1rem" }}>Turn on notifications</h3>
+            <p style={{ ...s.modalBody, textAlign: "center" as const }}>
+              Get notified the moment I reply — even if you've closed the site or your phone is locked.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: "8px", width: "100%", marginTop: "6px" }}>
+              <button style={{ ...s.heroCTA, width: "100%" }} onClick={requestNotificationPermission}>Enable notifications</button>
+              <button style={{ background: "none", border: "none", color: "#444", fontSize: "0.85rem", cursor: "pointer", padding: "8px" }} onClick={() => setNotifPermission("denied")}>Not now</button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -673,10 +700,6 @@ const s: { [key: string]: React.CSSProperties } = {
   nameSub: { color: "#444", fontSize: "0.85rem", lineHeight: "1.5" },
   nameInput: { background: "#000", border: "1px solid #1e1e1e", color: "#fff", padding: "13px 15px", borderRadius: "10px", fontSize: "1rem", outline: "none" },
   nameBtn: { background: "#fff", color: "#000", border: "none", padding: "13px", borderRadius: "10px", fontSize: "0.95rem", fontWeight: "700", cursor: "pointer" },
-  notifBanner: { position: "fixed" as const, top: 0, left: 0, right: 0, background: "#0a0a0a", borderBottom: "1px solid #1a1a1a", padding: "10px 20px", display: "flex", alignItems: "center", gap: "12px", zIndex: 200, justifyContent: "center" },
-  notifText: { color: "#888", fontSize: "0.85rem" },
-  notifBtn: { background: "#fff", color: "#000", border: "none", padding: "6px 14px", borderRadius: "7px", fontSize: "0.82rem", fontWeight: "700", cursor: "pointer" },
-  notifDismiss: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "0.9rem" },
   sidebar: { width: "240px", borderRight: "1px solid #0f0f0f", display: "flex", flexDirection: "column" as const, flexShrink: 0, overflowY: "auto" as const },
   sidebarTop: { padding: "18px 16px 14px" },
   sidebarLogo: { background: "none", border: "none", color: "#555", fontWeight: "600", fontSize: "0.82rem", cursor: "pointer", padding: 0 },

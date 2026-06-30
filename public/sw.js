@@ -6,6 +6,7 @@ self.addEventListener("push", (event) => {
       icon: "/favicon.ico",
       badge: "/favicon.ico",
       vibrate: [100, 50, 100],
+      data: { chatId: data.chatId },
     })
   );
 });
